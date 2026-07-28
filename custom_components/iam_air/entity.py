@@ -5,11 +5,24 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import IamAirCoordinator
 from .models import IamAirDevice
+
+
+def add_iam_entities(
+    entry: Any,
+    async_add_entities: AddEntitiesCallback,
+    entities: list[IamAirEntity],
+) -> None:
+    """Register the active unique IDs before adding entities to HA."""
+    entry.runtime_data.active_unique_ids.update(
+        entity.unique_id for entity in entities if entity.unique_id is not None
+    )
+    async_add_entities(entities)
 
 
 class IamAirEntity(CoordinatorEntity[IamAirCoordinator]):
@@ -40,7 +53,7 @@ class IamAirEntity(CoordinatorEntity[IamAirCoordinator]):
         snapshot = (self.coordinator.data or {}).get(self.device.iot_id)
         return super().available and snapshot is not None and snapshot.available
 
-    def value(self, identifier: str) -> Any:
+    def property_value(self, identifier: str) -> Any:
         """Return one property from the latest snapshot."""
         snapshot = (self.coordinator.data or {}).get(self.device.iot_id)
         if snapshot is None:

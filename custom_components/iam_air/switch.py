@@ -8,15 +8,19 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
-from .entity import IamAirEntity
+from .const import POWER_PROPERTY_ALIASES
+from .entity import IamAirEntity, add_iam_entities
 from .models import IamAirDevice, TslProperty, value_as_bool
 
 SWITCH_ALIASES = (
-    ("childLockOnOff", "childLock", "ChildLock"),
-    ("uvSterilization", "UVSwitch", "uvSwitch"),
+    POWER_PROPERTY_ALIASES,
+    ("ChildLockSwitch", "childLockOnOff", "childLock", "ChildLock"),
+    ("DisinfectSwitch", "disinfectSwitch", "disinfection", "Disinfection"),
     ("IonsSwitch", "ionsSwitch", "negativeIon"),
-    ("disinfection", "Disinfection"),
-    ("TrustSwitch", "trustSwitch"),
+    ("ScreenSwitch", "screenSwitch"),
+    ("Trusteeship", "TrustSwitch", "trustSwitch"),
+    ("T_DisinfectSwitch",),
+    ("T_IonsSwitch",),
 )
 
 
@@ -41,7 +45,7 @@ async def async_setup_entry(
                 continue
             seen.add(prop.identifier)
             entities.append(IamAirSwitch(coordinator, device, prop))
-    async_add_entities(entities)
+    add_iam_entities(entry, async_add_entities, entities)
 
 
 class IamAirSwitch(IamAirEntity, SwitchEntity):
@@ -62,9 +66,12 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
         self._attr_name = prop.name
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return the current switch state."""
-        return value_as_bool(self.value(self._property.identifier))
+        value = self.property_value(self._property.identifier)
+        if value is None:
+            return None
+        return value_as_bool(value)
 
     async def async_turn_on(self, **_kwargs: Any) -> None:
         """Enable the property."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,6 +16,7 @@ from homeassistant.const import (
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .cloud import (
@@ -48,6 +49,7 @@ class IamAirRuntimeData:
 
     client: IamCloudClient
     coordinator: IamAirCoordinator
+    active_unique_ids: set[str] = field(default_factory=set)
 
 
 type IamAirConfigEntry = ConfigEntry[IamAirRuntimeData]
@@ -71,6 +73,27 @@ def async_remove_stale_devices(
         }
         if iam_ids and iam_ids.isdisjoint(active_iot_ids):
             registry.async_remove_device(device_entry.id)
+            removed += 1
+    return removed
+
+
+def async_remove_stale_entities(
+    hass: HomeAssistant,
+    entry: IamAirConfigEntry,
+    active_unique_ids: set[str],
+) -> int:
+    """Remove registry entities no longer exposed by the live App/TSL surface."""
+    registry = er.async_get(hass)
+    removed = 0
+    for entity_entry in er.async_entries_for_config_entry(
+        registry,
+        entry.entry_id,
+    ):
+        if (
+            entity_entry.platform == DOMAIN
+            and entity_entry.unique_id not in active_unique_ids
+        ):
+            registry.async_remove(entity_entry.entity_id)
             removed += 1
     return removed
 
@@ -152,19 +175,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bo
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     active_iot_ids = {device.iot_id for device in devices}
+    delayed_cleanup_scheduled = False
 
     @callback
     def async_cleanup_stale_devices(_event: Any = None) -> None:
+        nonlocal delayed_cleanup_scheduled
         removed_devices = async_remove_stale_devices(
             hass,
             entry,
             active_iot_ids,
         )
-        _LOGGER.info(
-            "Discovered %d app-visible device(s); removed %d stale registry device(s)",
-            len(devices),
-            removed_devices,
+        removed_entities = async_remove_stale_entities(
+            hass,
+            entry,
+            entry.runtime_data.active_unique_ids,
         )
+        _LOGGER.info(
+            "Discovered %d app-visible device(s) with %d active entities; "
+            "removed %d stale registry device(s) and %d stale entity entry/entries",
+            len(devices),
+            len(entry.runtime_data.active_unique_ids),
+            removed_devices,
+            removed_entities,
+        )
+        if not delayed_cleanup_scheduled:
+            delayed_cleanup_scheduled = True
+            cleanup_handle = hass.loop.call_later(
+                5,
+                async_cleanup_stale_devices,
+            )
+            entry.async_on_unload(cleanup_handle.cancel)
 
     if hass.state is CoreState.running:
         async_cleanup_stale_devices()

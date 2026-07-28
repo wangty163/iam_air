@@ -5,7 +5,14 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "iam_air"
-PLATFORMS = (Platform.FAN, Platform.SENSOR, Platform.SWITCH)
+PLATFORMS = (
+    Platform.BUTTON,
+    Platform.FAN,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+)
 
 CONF_APP_KEY = "app_key"
 CONF_APP_SECRET = "app_secret"  # noqa: S105 - legacy configuration field name
@@ -40,6 +47,6 @@ PATH_PROPERTIES_SET = "/thing/properties/set"
 PATH_REFRESH_SESSION = "/account/checkOrRefreshSession"
 PATH_TSL_GET = "/thing/tsl/get"
 
-POWER_PROPERTY_ALIASES = ("powerstate", "power", "PowerSwitch")
-SPEED_PROPERTY_ALIASES = ("windspeed", "WindSpeed", "fanSpeed")
-MODE_PROPERTY_ALIASES = ("mode", "workMode", "WorkMode")
+POWER_PROPERTY_ALIASES = ("PowerSwitch", "powerstate", "power")
+SPEED_PROPERTY_ALIASES = ("WindSpeed", "windspeed", "fanSpeed")
+MODE_PROPERTY_ALIASES = ("WorkMode", "workMode", "mode")

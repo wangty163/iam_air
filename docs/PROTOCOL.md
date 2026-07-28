@@ -81,18 +81,27 @@ References:
 - [Get properties](https://help.aliyun.com/zh/document_detail/177868.html)
 - [Set properties](https://help.aliyun.com/zh/document_detail/177844.html)
 
-## Known air-purifier property aliases
+## Confirmed XDJ/Y control surface
 
-The integration still validates these against the live TSL before creating an
-entity or writing a value:
+Static inspection of the IAM Android 3.4.3 XDJ detail implementation and a
+live, redacted TSL capability check agree on the following reusable property
+surface. The integration still validates every item against the live TSL before
+creating an entity or writing a value:
 
-- Power: `powerstate`
-- Fan speed: `windspeed`
-- Mode: `mode`
-- Air data: `PM25`, `HCHO`, `tvoc`, `airQualityGrade`
-- Environment: `CuTemperature`, `CurrentHumidity`
-- Filter state: `filterStatusOne`, `filterStatusTwo`, `filterStatusThree`
-- Controls: `childLockOnOff`, `uvSterilization`, `IonsSwitch`,
-  `disinfection`, `TrustSwitch`
+- Main controls: `PowerSwitch`, `WindSpeed`, `WorkMode`
+- Direct switches: `ChildLockSwitch`, `ScreenSwitch`, `IonsSwitch`,
+  `DisinfectSwitch`, `Trusteeship`
+- Timers: `TimingOn`, `TimingOff`, `TimingRemain`
+- Trusteeship settings: `T_ON_PM25`, `T_OFF_PM25`, `T_ON_HCHO`,
+  `T_OFF_HCHO`, `T_ON_TVOCLevel`, `T_OFF_TVOCLevel`,
+  `T_DisinfectSwitch`, `T_IonsSwitch`
+- Air and environment data: `PM25`, `PM25Level`, `HCHO`, `HCHOLevel`,
+  `TVOCLevel`, `CurrentTemperature`, `CurrentHumidity`
+- Filter and runtime data: `FilterRunTime_1`, `FilterRunTime_2`,
+  `FilterStatus_1`, `FilterStatus_2`, `Runtime_1`
+- Explicit maintenance action: `FilterReset`
 
-No write is attempted for a property unless the live TSL reports write access.
+The TSL can also advertise provisioning, account, Wi-Fi diagnostic or
+model-internal properties. Those are not App device controls and are
+intentionally not exposed. In particular, forced unbinding is never surfaced
+as an entity. No write is attempted unless the live TSL reports write access.

@@ -6,6 +6,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 
+from custom_components.iam_air.models import TslProperty
 from custom_components.iam_air.sensor import normalize_unit
 
 
@@ -16,3 +17,16 @@ def test_normalize_unit() -> None:
     assert normalize_unit("℃") == UnitOfTemperature.CELSIUS
     assert normalize_unit("%RH") == PERCENTAGE
     assert normalize_unit("mg/m³") == "mg/m³"
+
+
+def test_enum_sensor_value_uses_app_label() -> None:
+    """Enum helpers expose the App's readable status labels."""
+    prop = TslProperty(
+        identifier="FilterStatus_1",
+        name="滤芯寿命状态_1",
+        access_mode="r",
+        data_type="enum",
+        specs={"0": "正常", "1": "需要更换"},
+    )
+
+    assert prop.option_for_value(0) == "正常"

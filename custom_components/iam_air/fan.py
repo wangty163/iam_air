@@ -13,7 +13,7 @@ from .const import (
     POWER_PROPERTY_ALIASES,
     SPEED_PROPERTY_ALIASES,
 )
-from .entity import IamAirEntity
+from .entity import IamAirEntity, add_iam_entities
 from .models import (
     IamAirDevice,
     percentage_for_property,
@@ -29,8 +29,13 @@ async def async_setup_entry(
 ) -> None:
     """Set up purifier fan entities."""
     coordinator = entry.runtime_data.coordinator
-    async_add_entities(
-        IamAirFan(coordinator, device) for device in coordinator.devices.values()
+    add_iam_entities(
+        entry,
+        async_add_entities,
+        [
+            IamAirFan(coordinator, device)
+            for device in coordinator.devices.values()
+        ],
     )
 
 
@@ -57,14 +62,14 @@ class IamAirFan(IamAirEntity, FanEntity):
         """Return the purifier power state."""
         if self._power is None:
             return None
-        return value_as_bool(self.value(self._power.identifier))
+        return value_as_bool(self.property_value(self._power.identifier))
 
     @property
     def percentage(self) -> int | None:
         """Return current fan speed as a Home Assistant percentage."""
         if self._speed is None:
             return None
-        raw = self.value(self._speed.identifier)
+        raw = self.property_value(self._speed.identifier)
         if raw is None:
             return None
         return percentage_for_property(self._speed, raw)
@@ -91,7 +96,9 @@ class IamAirFan(IamAirEntity, FanEntity):
         """Return the active mode label."""
         if not self._mode:
             return None
-        return self._mode.option_for_value(self.value(self._mode.identifier))
+        return self._mode.option_for_value(
+            self.property_value(self._mode.identifier)
+        )
 
     async def async_turn_on(
         self,

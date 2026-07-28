@@ -14,11 +14,12 @@ from homeassistant.const import (
     CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     PERCENTAGE,
     UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
-from .entity import IamAirEntity
+from .entity import IamAirEntity, add_iam_entities
 from .models import IamAirDevice, TslProperty
 
 
@@ -39,10 +40,10 @@ SENSOR_SPECS = (
         default_unit=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     ),
     IamSensorSpec(aliases=("HCHO", "hcho", "formaldehyde")),
-    IamSensorSpec(aliases=("HCHOLevel", "hchoLevel")),
+    IamSensorSpec(aliases=("HCHOLevel", "hchoLevel"), state_class=None),
     IamSensorSpec(aliases=("TVOC", "tvoc")),
-    IamSensorSpec(aliases=("TVOCLevel", "tvocLevel")),
-    IamSensorSpec(aliases=("PM25Level", "pm25Level")),
+    IamSensorSpec(aliases=("TVOCLevel", "tvocLevel"), state_class=None),
+    IamSensorSpec(aliases=("PM25Level", "pm25Level"), state_class=None),
     IamSensorSpec(
         aliases=("CuTemperature", "CurrentTemperature", "currentTemp"),
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -54,16 +55,39 @@ SENSOR_SPECS = (
         default_unit=PERCENTAGE,
     ),
     IamSensorSpec(
-        aliases=("filterStatusOne", "FilterStatus", "filterStatus"),
-        default_unit=PERCENTAGE,
+        aliases=("FilterRunTime_1", "filterRunTime_1"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
     ),
     IamSensorSpec(
-        aliases=("filterStatusTwo", "FilterStatus_2"),
-        default_unit=PERCENTAGE,
+        aliases=("FilterRunTime_2", "filterRunTime_2"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
     ),
     IamSensorSpec(
-        aliases=("filterStatusThree", "FilterStatus_3"),
-        default_unit=PERCENTAGE,
+        aliases=("Runtime_1", "runtime_1"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    IamSensorSpec(
+        aliases=("FilterStatus_1", "filterStatusOne", "FilterStatus"),
+        state_class=None,
+    ),
+    IamSensorSpec(
+        aliases=("FilterStatus_2", "filterStatusTwo"),
+        state_class=None,
+    ),
+    IamSensorSpec(
+        aliases=("FilterStatus_3", "filterStatusThree"),
+        state_class=None,
+    ),
+    IamSensorSpec(
+        aliases=("TimingRemain", "timingRemain"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.MINUTES,
     ),
     IamSensorSpec(
         aliases=("airQualityGrade", "airQuality"),
@@ -92,7 +116,7 @@ async def async_setup_entry(
                 continue
             seen.add(prop.identifier)
             entities.append(IamAirSensor(coordinator, device, prop=prop, spec=spec))
-    async_add_entities(entities)
+    add_iam_entities(entry, async_add_entities, entities)
 
 
 class IamAirSensor(IamAirEntity, SensorEntity):
@@ -122,7 +146,10 @@ class IamAirSensor(IamAirEntity, SensorEntity):
     @property
     def native_value(self) -> Any:
         """Return the latest property value."""
-        return self.value(self._property.identifier)
+        value = self.property_value(self._property.identifier)
+        if value is None:
+            return None
+        return self._property.option_for_value(value) or value
 
 
 def normalize_unit(unit: str | None) -> str | None:
