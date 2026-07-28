@@ -1,0 +1,14 @@
+{
+  "domain": "iam_air",
+  "name": "IAM Air",
+  "codeowners": [
+    "@wangty163"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/wangty163/iam_air",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/wangty163/iam_air/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
