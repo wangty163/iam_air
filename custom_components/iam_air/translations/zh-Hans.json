@@ -3,26 +3,24 @@
     "step": {
       "user": {
         "title": "连接 IAM 空气净化器",
-        "description": "请把官方“心够智家”APK 放到 Home Assistant 主机。IAM Air 只在内存中读取与该 App 匹配的 Link Living 客户端凭证；APK 和提取值都不会上传或写入日志。",
+        "description": "IAM Air 从仅属主可读的 /config/iam_air/credentials.json 读取 Link Living AppKey/AppSecret。",
         "data": {
           "username": "IAM 账号手机号",
-          "password": "IAM 账号密码",
-          "apk_path": "官方“心够智家”APK 的本地路径"
+          "password": "IAM 账号密码"
         }
       },
       "reauth_confirm": {
         "title": "重新连接 IAM 空气净化器",
-        "description": "请输入当前 IAM 账号和官方 APK 的本地路径。",
+        "description": "请输入当前 IAM 账号和密码。",
         "data": {
           "username": "IAM 账号手机号",
-          "password": "IAM 账号密码",
-          "apk_path": "官方“心够智家”APK 的本地路径"
+          "password": "IAM 账号密码"
         }
       }
     },
     "error": {
       "cannot_connect": "无法连接 IAM 云服务",
-      "invalid_apk": "APK 无法读取，或其“心够智家”字节码结构暂不受支持",
+      "invalid_credentials": "Link Living 私有凭据文件缺失、格式错误，或权限不是仅属主可读",
       "invalid_auth": "身份验证失败",
       "no_devices": "没有发现已绑定的空气净化器",
       "unknown": "发生未知错误"

@@ -10,13 +10,11 @@ Issue.
 ## Credential handling
 
 - This repository must never contain a real AppKey, AppSecret, password or token.
-- The user supplies an official APK only on their own Home Assistant host; the
-  repository does not download, bundle or redistribute it.
-- AppKey/AppSecret values are extracted from the local APK into memory and are
-  never written to the config entry, logs or diagnostics.
-- The APK parser validates the expected DEX class/field shape, but does not
-  cryptographically authenticate the APK publisher. Obtain the APK only from a
-  trusted official channel.
+- AppKey/AppSecret values live only in the user's owner-readable
+  `/config/iam_air/credentials.json`; the repository does not download, bundle
+  or redistribute them.
+- The credential file must have mode `0600` on POSIX hosts. Values are loaded
+  into memory and are never copied to new config entries, logs or diagnostics.
 - IAM account credentials are collected through Home Assistant's config flow.
 - Cloud errors are reduced to status codes and safe messages.
 - Request and response bodies are not logged.

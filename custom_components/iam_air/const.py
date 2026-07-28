@@ -7,7 +7,10 @@ from homeassistant.const import Platform
 DOMAIN = "iam_air"
 PLATFORMS = (Platform.FAN, Platform.SENSOR, Platform.SWITCH)
 
-CONF_APK_PATH = "apk_path"
+CONF_APP_KEY = "app_key"
+CONF_APP_SECRET = "app_secret"  # noqa: S105 - legacy configuration field name
+CREDENTIALS_DIRECTORY = "iam_air"
+CREDENTIALS_FILENAME = "credentials.json"
 
 IAM_API_BASE_URL = "https://xapp.ixingoo.com/xapp/"
 IOT_API_BASE_URL = "https://api.link.aliyun.com"

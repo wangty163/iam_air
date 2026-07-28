@@ -16,6 +16,7 @@ htmlcov/
 # Never commit Home Assistant runtime data or captures.
 .storage/
 secrets.yaml
+credentials.json
 auth
 *.apk
 *.db
