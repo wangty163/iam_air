@@ -388,7 +388,7 @@ def parse_iam_login_response(
     response: dict[str, Any], fallback_username: str
 ) -> IamAccountSession:
     """Parse an IAM login response without retaining or exposing the password."""
-    if response.get("status") != 1000:
+    if response.get("status") not in (1000, "1000"):
         raise IamAirAuthError(str(response.get("message") or "IAM login failed"))
     result = response.get("result")
     if not isinstance(result, dict) or not result.get("userId"):

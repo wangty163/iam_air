@@ -65,11 +65,14 @@ def test_gateway_signature_is_deterministic_and_secret_is_not_transmitted() -> N
     assert request.headers["X-Ca-Signature"] == expected
 
 
-def test_parse_iam_login_response_keeps_only_session_fields() -> None:
+@pytest.mark.parametrize("status", (1000, "1000"))
+def test_parse_iam_login_response_keeps_only_session_fields(
+    status: int | str,
+) -> None:
     """IAM login parsing neither needs nor returns a password."""
     session = parse_iam_login_response(
         {
-            "status": 1000,
+            "status": status,
             "result": {
                 "userId": "fake-user",
                 "userName": "fake-account",
