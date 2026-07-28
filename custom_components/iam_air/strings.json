@@ -3,27 +3,26 @@
     "step": {
       "user": {
         "title": "Connect IAM Air",
-        "description": "Credentials are sent only to the official IAM and Alibaba Link Living services and are stored locally by Home Assistant. App credentials are not bundled with this public integration.",
+        "description": "Place an official 心够智家 APK on the Home Assistant host. IAM Air reads its matching Link Living client credentials only in memory; the APK and extracted values are never uploaded or logged.",
         "data": {
           "username": "IAM account phone number",
           "password": "IAM account password",
-          "app_key": "Authorized Link Living AppKey",
-          "app_secret": "Authorized Link Living AppSecret"
+          "apk_path": "Local path to the official 心够智家 APK"
         }
       },
       "reauth_confirm": {
         "title": "Reconnect IAM Air",
-        "description": "Enter the current IAM and authorized Link Living credentials.",
+        "description": "Enter the current IAM credentials and local official APK path.",
         "data": {
           "username": "IAM account phone number",
           "password": "IAM account password",
-          "app_key": "Authorized Link Living AppKey",
-          "app_secret": "Authorized Link Living AppSecret"
+          "apk_path": "Local path to the official 心够智家 APK"
         }
       }
     },
     "error": {
       "cannot_connect": "Unable to reach the IAM cloud",
+      "invalid_apk": "The APK is unreadable or its 心够智家 bytecode layout is unsupported",
       "invalid_auth": "Authentication failed",
       "no_devices": "No bound air purifier was found",
       "unknown": "Unexpected error"

@@ -16,12 +16,16 @@ FORBIDDEN_FILENAMES = {
     "auth",
 }
 FORBIDDEN_SUFFIXES = {
+    ".aab",
     ".apk",
+    ".apks",
     ".db",
+    ".dex",
     ".har",
     ".pcap",
     ".pcapng",
     ".trace",
+    ".xapk",
 }
 TEXT_SUFFIXES = {
     ".json",

@@ -10,13 +10,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .apk import IamAirApkError, extract_app_credentials
 from .cloud import (
     IamAirAuthError,
     IamAirConnectionError,
     IamAirError,
     IamCloudClient,
 )
-from .const import CONF_APP_KEY, CONF_APP_SECRET, PLATFORMS
+from .const import CONF_APK_PATH, PLATFORMS
 from .coordinator import IamAirCoordinator
 
 
@@ -33,16 +34,22 @@ type IamAirConfigEntry = ConfigEntry[IamAirRuntimeData]
 
 async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bool:
     """Set up IAM Air from a config entry."""
-    client = IamCloudClient(
-        async_get_clientsession(hass),
-        username=entry.data[CONF_USERNAME],
-        password=entry.data[CONF_PASSWORD],
-        app_key=entry.data[CONF_APP_KEY],
-        app_secret=entry.data[CONF_APP_SECRET],
-    )
     try:
+        credentials = await hass.async_add_executor_job(
+            extract_app_credentials,
+            entry.data[CONF_APK_PATH],
+        )
+        client = IamCloudClient(
+            async_get_clientsession(hass),
+            username=entry.data[CONF_USERNAME],
+            password=entry.data[CONF_PASSWORD],
+            app_key=credentials.app_key,
+            app_secret=credentials.app_secret,
+        )
         await client.async_login()
         devices = await client.async_discover_air_devices()
+    except IamAirApkError as err:
+        raise ConfigEntryNotReady("IAM APK credentials are unavailable") from err
     except IamAirAuthError as err:
         raise ConfigEntryAuthFailed("IAM Air authentication failed") from err
     except IamAirConnectionError as err:

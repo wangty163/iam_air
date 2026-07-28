@@ -4,6 +4,22 @@ This document records only reusable protocol shape. It intentionally excludes
 credentials, account data, device identifiers, captured traffic and proprietary
 application secrets.
 
+## Local APK credential import
+
+Link Living client calls require the AppKey/AppSecret belonging to IAM's own
+application project. A key created in an unrelated Alibaba project cannot access
+the user's IAM-bound devices.
+
+The integration therefore asks the user to place an official 心够智家 APK on
+their own Home Assistant host. A minimal DEX reader locates
+`com.ixingoo.xingou.common.XingooConstants` and reads the values assigned to
+`APP_KEY` and `APP_SECRET` by its static initializer. The reader is deliberately
+limited to this class and these fields; it is not a general APK decompiler.
+
+The APK never leaves the user's host. Extracted values are kept in memory only
+and are not written to the config entry, logs or diagnostics. Neither the APK nor
+the extracted values may be committed to this repository.
+
 ## IAM account service
 
 - Base URL: `https://xapp.ixingoo.com/xapp/`
@@ -25,7 +41,8 @@ flow. After IAM login, the account identity is passed through:
 3. `/account/createSessionByAuthCode`
 
 All API Gateway calls use the documented `x-ca-*` HMAC-SHA1 signature scheme.
-App credentials are runtime configuration and are never part of source control.
+App credentials come from the local user-supplied APK at runtime and are never
+part of source control.
 
 ## Device APIs
 

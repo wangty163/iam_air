@@ -9,6 +9,7 @@ import pytest
     "module",
     (
         "custom_components.iam_air",
+        "custom_components.iam_air.apk",
         "custom_components.iam_air.cloud",
         "custom_components.iam_air.config_flow",
         "custom_components.iam_air.coordinator",

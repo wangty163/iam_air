@@ -17,13 +17,14 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .apk import IamAirApkError, extract_app_credentials
 from .cloud import (
     IamAirAuthError,
     IamAirConnectionError,
     IamAirError,
     IamCloudClient,
 )
-from .const import CONF_APP_KEY, CONF_APP_SECRET, DOMAIN
+from .const import CONF_APK_PATH, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,10 +37,10 @@ def user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         if CONF_USERNAME in defaults
         else vol.Required(CONF_USERNAME)
     )
-    app_key_marker = (
-        vol.Required(CONF_APP_KEY, default=defaults[CONF_APP_KEY])
-        if CONF_APP_KEY in defaults
-        else vol.Required(CONF_APP_KEY)
+    apk_path_marker = (
+        vol.Required(CONF_APK_PATH, default=defaults[CONF_APK_PATH])
+        if CONF_APK_PATH in defaults
+        else vol.Required(CONF_APK_PATH)
     )
     return vol.Schema(
         {
@@ -47,10 +48,7 @@ def user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(CONF_PASSWORD): TextSelector(
                 TextSelectorConfig(type=TextSelectorType.PASSWORD)
             ),
-            app_key_marker: TextSelector(),
-            vol.Required(CONF_APP_SECRET): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.PASSWORD)
-            ),
+            apk_path_marker: TextSelector(),
         }
     )
 
@@ -58,7 +56,7 @@ def user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 class IamAirConfigFlow(ConfigFlow, domain=DOMAIN):
     """Configure IAM Air through the UI."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -66,16 +64,22 @@ class IamAirConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle initial account configuration."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            client = IamCloudClient(
-                async_get_clientsession(self.hass),
-                username=user_input[CONF_USERNAME],
-                password=user_input[CONF_PASSWORD],
-                app_key=user_input[CONF_APP_KEY],
-                app_secret=user_input[CONF_APP_SECRET],
-            )
             try:
+                credentials = await self.hass.async_add_executor_job(
+                    extract_app_credentials,
+                    user_input[CONF_APK_PATH],
+                )
+                client = IamCloudClient(
+                    async_get_clientsession(self.hass),
+                    username=user_input[CONF_USERNAME],
+                    password=user_input[CONF_PASSWORD],
+                    app_key=credentials.app_key,
+                    app_secret=credentials.app_secret,
+                )
                 await client.async_login()
                 devices = await client.async_discover_air_devices()
+            except IamAirApkError:
+                errors["base"] = "invalid_apk"
             except IamAirAuthError:
                 errors["base"] = "invalid_auth"
             except IamAirConnectionError:
@@ -88,11 +92,7 @@ class IamAirConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = "no_devices"
                 else:
                     digest = hashlib.sha256(
-                        (
-                            user_input[CONF_USERNAME].strip().lower()
-                            + "\0"
-                            + user_input[CONF_APP_KEY].strip()
-                        ).encode()
+                        user_input[CONF_USERNAME].strip().lower().encode()
                     ).hexdigest()[:24]
                     await self.async_set_unique_id(f"account-{digest}")
                     self._abort_if_unique_id_configured()
@@ -102,10 +102,15 @@ class IamAirConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
 
         visible_defaults = {
-            key: value
-            for key, value in (user_input or {}).items()
-            if key not in {CONF_PASSWORD, CONF_APP_SECRET}
+            CONF_APK_PATH: self.hass.config.path("iam_air", "xingou.apk")
         }
+        visible_defaults.update(
+            {
+                key: value
+                for key, value in (user_input or {}).items()
+                if key != CONF_PASSWORD
+            }
+        )
         return self.async_show_form(
             step_id="user",
             data_schema=user_schema(visible_defaults),
@@ -125,16 +130,22 @@ class IamAirConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            client = IamCloudClient(
-                async_get_clientsession(self.hass),
-                username=user_input[CONF_USERNAME],
-                password=user_input[CONF_PASSWORD],
-                app_key=user_input[CONF_APP_KEY],
-                app_secret=user_input[CONF_APP_SECRET],
-            )
             try:
+                credentials = await self.hass.async_add_executor_job(
+                    extract_app_credentials,
+                    user_input[CONF_APK_PATH],
+                )
+                client = IamCloudClient(
+                    async_get_clientsession(self.hass),
+                    username=user_input[CONF_USERNAME],
+                    password=user_input[CONF_PASSWORD],
+                    app_key=credentials.app_key,
+                    app_secret=credentials.app_secret,
+                )
                 await client.async_login()
                 devices = await client.async_discover_air_devices()
+            except IamAirApkError:
+                errors["base"] = "invalid_apk"
             except IamAirAuthError:
                 errors["base"] = "invalid_auth"
             except IamAirConnectionError:
@@ -152,7 +163,7 @@ class IamAirConfigFlow(ConfigFlow, domain=DOMAIN):
 
         defaults = {
             CONF_USERNAME: entry.data[CONF_USERNAME],
-            CONF_APP_KEY: entry.data[CONF_APP_KEY],
+            CONF_APK_PATH: entry.data[CONF_APK_PATH],
         }
         return self.async_show_form(
             step_id="reauth_confirm",
