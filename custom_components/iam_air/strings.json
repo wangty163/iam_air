@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect IAM Air",
+        "description": "Credentials are sent only to the official IAM and Alibaba Link Living services and are stored locally by Home Assistant. App credentials are not bundled with this public integration.",
+        "data": {
+          "username": "IAM account phone number",
+          "password": "IAM account password",
+          "app_key": "Authorized Link Living AppKey",
+          "app_secret": "Authorized Link Living AppSecret"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect IAM Air",
+        "description": "Enter the current IAM and authorized Link Living credentials.",
+        "data": {
+          "username": "IAM account phone number",
+          "password": "IAM account password",
+          "app_key": "Authorized Link Living AppKey",
+          "app_secret": "Authorized Link Living AppSecret"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to reach the IAM cloud",
+      "invalid_auth": "Authentication failed",
+      "no_devices": "No bound air purifier was found",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This IAM account is already configured",
+      "reauth_successful": "IAM Air was reauthenticated"
+    }
+  }
+}

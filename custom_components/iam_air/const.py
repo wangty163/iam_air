@@ -1,0 +1,40 @@
+"""Constants for the IAM Air integration."""
+
+from __future__ import annotations
+
+from homeassistant.const import Platform
+
+DOMAIN = "iam_air"
+PLATFORMS = (Platform.FAN, Platform.SENSOR, Platform.SWITCH)
+
+CONF_APP_KEY = "app_key"
+CONF_APP_SECRET = "app_secret"  # noqa: S105 - configuration field name
+
+IAM_API_BASE_URL = "https://xapp.ixingoo.com/xapp/"
+IOT_API_BASE_URL = "https://api.link.aliyun.com"
+OA_REGION_API_PATH = "/living/account/region/get"
+OA_LOGIN_API_PATH = "/api/prd/loginbyoauth.json"
+
+DEFAULT_SCAN_INTERVAL_SECONDS = 30
+HTTP_TIMEOUT_SECONDS = 15
+IAM_PROTOCOL_VERSION = "1.0.0"
+IAM_APP_VERSION = "3.4.3"
+
+API_VERSION_CREATE_SESSION = "1.0.4"
+API_VERSION_DEVICE_LIST = "1.0.8"
+API_VERSION_PROPERTIES_GET = "1.0.4"
+API_VERSION_PROPERTIES_SET = "1.0.5"
+API_VERSION_REFRESH_SESSION = "1.0.4"
+API_VERSION_REGION = "1.0.2"
+API_VERSION_TSL_GET = "1.0.4"
+
+PATH_CREATE_SESSION = "/account/createSessionByAuthCode"
+PATH_DEVICE_LIST = "/uc/listBindingByAccount"
+PATH_PROPERTIES_GET = "/thing/properties/get"
+PATH_PROPERTIES_SET = "/thing/properties/set"
+PATH_REFRESH_SESSION = "/account/checkOrRefreshSession"
+PATH_TSL_GET = "/thing/tsl/get"
+
+POWER_PROPERTY_ALIASES = ("powerstate", "power", "PowerSwitch")
+SPEED_PROPERTY_ALIASES = ("windspeed", "WindSpeed", "fanSpeed")
+MODE_PROPERTY_ALIASES = ("mode", "workMode", "WorkMode")
