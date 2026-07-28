@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    EVENT_HOMEASSISTANT_STARTED,
+)
+from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .cloud import (
@@ -23,6 +29,7 @@ from .const import (
     CONF_APP_SECRET,
     CREDENTIALS_DIRECTORY,
     CREDENTIALS_FILENAME,
+    DOMAIN,
     PLATFORMS,
 )
 from .coordinator import IamAirCoordinator
@@ -31,6 +38,8 @@ from .credentials import (
     IamAppCredentials,
     load_app_credentials,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -42,6 +51,28 @@ class IamAirRuntimeData:
 
 
 type IamAirConfigEntry = ConfigEntry[IamAirRuntimeData]
+
+
+def async_remove_stale_devices(
+    hass: HomeAssistant,
+    entry: IamAirConfigEntry,
+    active_iot_ids: set[str],
+) -> int:
+    """Remove registry devices that the IAM app no longer exposes."""
+    registry = dr.async_get(hass)
+    removed = 0
+    for device_entry in list(registry.devices.values()):
+        if entry.entry_id not in device_entry.config_entries:
+            continue
+        iam_ids = {
+            value
+            for domain, value in device_entry.identifiers
+            if domain == DOMAIN
+        }
+        if iam_ids and iam_ids.isdisjoint(active_iot_ids):
+            registry.async_remove_device(device_entry.id)
+            removed += 1
+    return removed
 
 
 def credentials_path(hass: HomeAssistant) -> str:
@@ -120,6 +151,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bo
         coordinator=coordinator,
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    active_iot_ids = {device.iot_id for device in devices}
+
+    @callback
+    def async_cleanup_stale_devices(_event: Any = None) -> None:
+        removed_devices = async_remove_stale_devices(
+            hass,
+            entry,
+            active_iot_ids,
+        )
+        _LOGGER.info(
+            "Discovered %d app-visible device(s); removed %d stale registry device(s)",
+            len(devices),
+            removed_devices,
+        )
+
+    if hass.state is CoreState.running:
+        async_cleanup_stale_devices()
+    else:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED,
+                async_cleanup_stale_devices,
+            )
+        )
     return True
 
 

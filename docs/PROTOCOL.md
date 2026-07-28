@@ -25,7 +25,19 @@ committed to this repository.
 - The successful result contains `userId`, `userName`, `token` and `imSign`.
 
 The integration uses only the account identity needed to establish the
-Link Living session. It never logs the login response or request body.
+Link Living session and query the app homepage. It never logs the login
+response or request body.
+
+### App-visible device list
+
+The app homepage does not render `/uc/listBindingByAccount` directly. It calls
+`POST index/homepage` with the IAM `userId`, uses the IAM login token headers,
+and renders the returned `result` list. Link Living can retain additional
+bindings that are absent from this homepage result.
+
+Discovery therefore treats homepage `iotId` values as the visibility source and
+intersects them with Link Living bindings. This is an ID-based association, not
+a product-key or model-family allowlist.
 
 ## Link Living authorization
 
@@ -40,11 +52,23 @@ All API Gateway calls use the documented `x-ca-*` HMAC-SHA1 signature scheme.
 App credentials come from the user's local owner-only file at runtime and are
 never part of source control.
 
+### Same-account session replacement
+
+Creating a second Link Living session for the same IAM account invalidates the
+previous session. The next request made with the old session returns code
+`29003` with a missing-identity error. The client classifies this as an
+authentication/session error, serializes refresh across concurrent device polls,
+refreshes or recreates the IoT session once, and retries the original request.
+That recovery replaces the other client's session in turn. Stable simultaneous
+App and Home Assistant use therefore requires a separate IAM identity with the
+device shared to it.
+
 ## Device APIs
 
 | Path | API version | Purpose |
 | --- | --- | --- |
-| `/uc/listBindingByAccount` | `1.0.8` | Discover bound devices |
+| `IAM index/homepage` | `3.1.0` | List devices visible in the app |
+| `/uc/listBindingByAccount` | `1.0.8` | Resolve app-visible IDs to controllable bindings |
 | `/thing/tsl/get` | `1.0.4` | Fetch the device TSL |
 | `/thing/properties/get` | `1.0.4` | Read property snapshot |
 | `/thing/properties/set` | `1.0.5` | Write properties |

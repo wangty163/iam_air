@@ -10,12 +10,16 @@
 
 - 通过 IAM 账号登录并换取阿里云生活物联网会话。
 - 从 HA 主机的私有文件直接读取 Link Living AppKey/AppSecret。
-- 自动发现账号下具有空气净化器 TSL 的设备。
+- 先读取心够智家首页设备列表，再按 `iotId` 关联 Link Living 绑定设备；
+  不按产品系列硬编码或暴露历史绑定；集成重载时会清理不再出现在 App
+  首页中的旧 HA 设备。
 - 根据设备自己的 TSL 创建实体，不在代码中硬编码设备 ID 或账号数据。
 - `fan`：开关、风速、运行模式。
 - `sensor`：PM2.5、甲醛、TVOC、温度、湿度、滤芯状态、空气质量等级。
 - `switch`：童锁、UV、负离子、消毒等；只为 TSL 标记为可读写的属性创建。
-- IoT Token 到期前自动刷新，30 秒云端轮询。
+- IoT Token 到期前自动刷新；同账号在 App 重新登录导致旧会话失效时，自动
+  串行刷新并重试原请求。
+- 30 秒云端轮询。
 
 ## 安全与隐私
 
@@ -81,9 +85,11 @@ chmod 600 /config/iam_air/credentials.json
 1. 调用 IAM 官方账号服务登录，获得用户身份。
 2. 从固定的本地私有文件读取 Link Living AppKey/AppSecret。
 3. 使用 IAM 身份完成 Link Living 自有账号授权。
-4. 创建 IoT 会话，并从 `/uc/listBindingByAccount` 获取绑定设备。
-5. 使用 `/thing/tsl/get` 读取设备物模型。
-6. 使用 `/thing/properties/get` 和 `/thing/properties/set` 读取及控制设备。
+4. 从 IAM `index/homepage` 获取 App 当前展示的设备 ID。
+5. 创建 IoT 会话，从 `/uc/listBindingByAccount` 获取可控绑定，并按设备 ID
+   与 App 首页列表取交集。
+6. 使用 `/thing/tsl/get` 读取设备物模型。
+7. 使用 `/thing/properties/get` 和 `/thing/properties/set` 读取及控制设备。
 
 协议边界和已确认字段见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
@@ -101,6 +107,9 @@ uv run python scripts/check_no_secrets.py
 ## 局限
 
 - 当前只实现云端轮询，尚未实现 ALCS/CoAP 局域网控制。
+- Link Living 对同一 IAM 身份只保留一个有效 IoT 会话；集成会在 App
+  登录后自动恢复，但恢复动作也会替换 App 的旧会话。若要 App 与 HA
+  同时稳定在线，HA 必须使用另一个已分享设备的 IAM 账号。
 - AppKey/AppSecret 由 IAM 对应的 Link Living 项目管理；项目轮换凭据时需要
   更新本地私有文件。
 - 设备实体由真实 TSL 决定；不同固件可能暴露不同属性。

@@ -13,6 +13,7 @@ CREDENTIALS_DIRECTORY = "iam_air"
 CREDENTIALS_FILENAME = "credentials.json"
 
 IAM_API_BASE_URL = "https://xapp.ixingoo.com/xapp/"
+IAM_HOMEPAGE_PATH = "index/homepage"
 IOT_API_BASE_URL = "https://api.link.aliyun.com"
 OA_REGION_API_PATH = "/living/account/region/get"
 OA_LOGIN_API_PATH = "/api/prd/loginbyoauth.json"
@@ -20,7 +21,9 @@ OA_LOGIN_API_PATH = "/api/prd/loginbyoauth.json"
 DEFAULT_SCAN_INTERVAL_SECONDS = 30
 HTTP_TIMEOUT_SECONDS = 15
 IAM_PROTOCOL_VERSION = "1.0.0"
+IAM_HOMEPAGE_PROTOCOL_VERSION = "3.1.0"
 IAM_APP_VERSION = "3.4.3"
+SESSION_ERROR_CODES = frozenset((401, 403, 460, 29003))
 
 API_VERSION_CREATE_SESSION = "1.0.4"
 API_VERSION_DEVICE_LIST = "1.0.8"

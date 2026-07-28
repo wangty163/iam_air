@@ -18,8 +18,10 @@ from .const import (
 class IamAccountSession:
     """Authenticated IAM account details."""
 
-    user_id: str
-    username: str
+    user_id: str = field(repr=False)
+    username: str = field(repr=False)
+    iam_token: str = field(repr=False)
+    im_sign: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
