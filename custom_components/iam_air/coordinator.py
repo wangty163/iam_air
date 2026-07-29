@@ -44,7 +44,13 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
 
     async def _async_update_data(self) -> dict[str, DeviceSnapshot]:
         results = await asyncio.gather(
-            *(self.client.async_get_properties(iot_id) for iot_id in self.devices),
+            *(
+                self.client.async_get_properties(
+                    iot_id,
+                    iot_paas_type=device.iot_paas_type,
+                )
+                for iot_id, device in self.devices.items()
+            ),
             return_exceptions=True,
         )
         snapshots: dict[str, DeviceSnapshot] = {}
@@ -66,13 +72,20 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                 raise ConfigEntryAuthFailed(
                     "IAM Air session is not authorized"
                 ) from error
-            raise UpdateFailed("Unable to update IAM Air devices") from error
+            raise UpdateFailed(f"Unable to update IAM Air devices: {error}") from error
         return snapshots
 
     async def async_set_properties(self, iot_id: str, items: dict[str, object]) -> None:
         """Write properties and request a fresh snapshot."""
+        device = self.devices.get(iot_id)
+        if device is None:
+            raise UpdateFailed("Unable to control unknown IAM Air device")
         try:
-            await self.client.async_set_properties(iot_id, items)
+            await self.client.async_set_properties(
+                iot_id,
+                items,
+                iot_paas_type=device.iot_paas_type,
+            )
         except IamAirError as err:
-            raise UpdateFailed("Unable to control IAM Air device") from err
+            raise UpdateFailed(f"Unable to control IAM Air device: {err}") from err
         await self.async_request_refresh()

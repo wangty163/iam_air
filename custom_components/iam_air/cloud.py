@@ -28,10 +28,15 @@ from .const import (
     HTTP_TIMEOUT_SECONDS,
     IAM_API_BASE_URL,
     IAM_APP_VERSION,
+    IAM_FOG_CONTROL_PATH,
+    IAM_FOG_PROPERTIES_PATH,
+    IAM_FOG_PROPERTIES_VERSION,
     IAM_HOMEPAGE_PATH,
     IAM_HOMEPAGE_PROTOCOL_VERSION,
     IAM_PROTOCOL_VERSION,
+    IAM_SESSION_REPLACED_STATUS,
     IOT_API_BASE_URL,
+    IOT_PAAS_TYPE_FOG,
     OA_LOGIN_API_PATH,
     OA_REGION_API_PATH,
     PATH_CREATE_SESSION,
@@ -92,6 +97,7 @@ class IamCloudClient:
         self._app_secret = app_secret.strip()
         self._account_session: IamAccountSession | None = None
         self._iot_session: IotSession | None = None
+        self._iam_session_refresh_lock = asyncio.Lock()
         self._session_refresh_lock = asyncio.Lock()
 
     @property
@@ -128,20 +134,11 @@ class IamCloudClient:
         account = self._account_session
         if account is None:
             raise IamAirAuthError("IAM account session is not initialized")
-        response = await self._async_post_json(
-            urljoin(IAM_API_BASE_URL, IAM_HOMEPAGE_PATH),
+        response = await self._async_iam_session_post_json(
+            IAM_HOMEPAGE_PATH,
             data={
                 "userId": account.user_id,
                 "version": IAM_HOMEPAGE_PROTOCOL_VERSION,
-            },
-            headers={
-                "token": account.iam_token,
-                "userName": account.username,
-                "signStr": account.im_sign,
-                "appVersion": IAM_APP_VERSION,
-                "phTypeName": "Home Assistant",
-                "phOSVersion": "Home Assistant",
-                "osType": "2",
             },
         )
         return parse_iam_homepage_response(response)
@@ -157,27 +154,40 @@ class IamCloudClient:
 
     async def async_discover_air_devices(self) -> list[IamAirDevice]:
         """Discover app-visible devices whose TSL looks like an air purifier."""
-        app_iot_ids = {
-            str(item.get("iotId"))
+        app_devices = {
+            str(item["iotId"]): item
             for item in await self.async_list_app_devices()
             if item.get("iotId")
         }
         discovered: list[IamAirDevice] = []
         for raw_device in await self.async_list_devices():
             iot_id = str(raw_device.get("iotId") or "")
-            if not iot_id or iot_id not in app_iot_ids:
+            if not iot_id or iot_id not in app_devices:
                 continue
             try:
                 tsl = await self.async_get_tsl(iot_id)
             except IamAirApiError:
                 continue
-            device = parse_device(raw_device, tsl)
+            device = parse_device(
+                raw_device,
+                tsl,
+                iot_paas_type=parse_iot_paas_type(
+                    app_devices[iot_id].get("iotPaasType")
+                ),
+            )
             if device.looks_like_air_purifier:
                 discovered.append(device)
         return discovered
 
-    async def async_get_properties(self, iot_id: str) -> dict[str, Any]:
+    async def async_get_properties(
+        self,
+        iot_id: str,
+        *,
+        iot_paas_type: int | None = None,
+    ) -> dict[str, Any]:
         """Return a device's property snapshot."""
+        if iot_paas_type == IOT_PAAS_TYPE_FOG:
+            return await self._async_get_fog_properties(iot_id)
         result = await self._async_session_gateway_call(
             PATH_PROPERTIES_GET,
             {"iotId": iot_id},
@@ -192,12 +202,127 @@ class IamCloudClient:
             if isinstance(item, dict) and "value" in item
         }
 
-    async def async_set_properties(self, iot_id: str, items: dict[str, Any]) -> None:
+    async def _async_get_fog_properties(self, iot_id: str) -> dict[str, Any]:
+        """Read properties through the IAM App's FOG device route."""
+        response = await self._async_iam_session_post_json(
+            IAM_FOG_PROPERTIES_PATH,
+            data={
+                "deviceId": iot_id,
+                "version": IAM_FOG_PROPERTIES_VERSION,
+            },
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM FOG property query failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise IamAirApiError("IAM FOG property response is invalid")
+        return result
+
+    async def async_set_properties(
+        self,
+        iot_id: str,
+        items: dict[str, Any],
+        *,
+        iot_paas_type: int | None = None,
+    ) -> None:
         """Set one or more writable device properties."""
+        if iot_paas_type == IOT_PAAS_TYPE_FOG:
+            await self._async_set_fog_properties(iot_id, items)
+            return
         await self._async_session_gateway_call(
             PATH_PROPERTIES_SET,
             {"iotId": iot_id, "items": items},
             api_version=API_VERSION_PROPERTIES_SET,
+        )
+
+    async def _async_set_fog_properties(
+        self,
+        iot_id: str,
+        items: dict[str, Any],
+    ) -> None:
+        """Set properties through the IAM App's FOG device route."""
+        body = json.dumps(
+            {"deviceId": iot_id, "operCmd": items},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        response = await self._async_iam_session_post_json(
+            IAM_FOG_CONTROL_PATH,
+            body=body,
+            content_type=CONTENT_TYPE_JSON,
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM FOG control failed"
+            raise IamAirApiError(str(message))
+
+    @staticmethod
+    def _iam_api_headers(account: IamAccountSession) -> dict[str, str]:
+        """Return the IAM App headers without exposing them to logs."""
+        return {
+            "token": account.iam_token,
+            "userName": account.username,
+            "signStr": account.im_sign,
+            "appVersion": IAM_APP_VERSION,
+            "phTypeName": "Home Assistant",
+            "phOSVersion": "Home Assistant",
+            "osType": "2",
+        }
+
+    async def _async_iam_session_post_json(
+        self,
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        body: bytes | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Call an IAM session API and recover once after status 1040."""
+        account = self._account_session
+        if account is None:
+            raise IamAirAuthError("IAM account session is not initialized")
+        response = await self._async_iam_api_post_json(
+            path,
+            account=account,
+            data=data,
+            body=body,
+            content_type=content_type,
+        )
+        if str(response.get("status")) != str(IAM_SESSION_REPLACED_STATUS):
+            return response
+
+        async with self._iam_session_refresh_lock:
+            if self._account_session is account:
+                self._account_session = await self._async_iam_login()
+        refreshed = self._account_session
+        if refreshed is None:
+            raise IamAirAuthError("IAM account session refresh failed")
+        return await self._async_iam_api_post_json(
+            path,
+            account=refreshed,
+            data=data,
+            body=body,
+            content_type=content_type,
+        )
+
+    async def _async_iam_api_post_json(
+        self,
+        path: str,
+        *,
+        account: IamAccountSession,
+        data: dict[str, str] | None,
+        body: bytes | None,
+        content_type: str | None,
+    ) -> dict[str, Any]:
+        """Send one IAM API request using an explicit account session."""
+        headers = self._iam_api_headers(account)
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        return await self._async_post_json(
+            urljoin(IAM_API_BASE_URL, path),
+            data=data,
+            body=body,
+            headers=headers,
         )
 
     async def _async_iam_login(self) -> IamAccountSession:
@@ -471,6 +596,14 @@ def parse_iam_homepage_response(response: dict[str, Any]) -> list[dict[str, Any]
     if not isinstance(result, list):
         raise IamAirApiError("IAM homepage response did not contain a device list")
     return [item for item in result if isinstance(item, dict)]
+
+
+def parse_iot_paas_type(value: Any) -> int | None:
+    """Parse the App's device control route marker."""
+    try:
+        return int(value)
+    except TypeError, ValueError:
+        return None
 
 
 def parse_iot_session_response(response: dict[str, Any]) -> IotSession:

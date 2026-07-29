@@ -21,6 +21,10 @@ CREDENTIALS_FILENAME = "credentials.json"
 
 IAM_API_BASE_URL = "https://xapp.ixingoo.com/xapp/"
 IAM_HOMEPAGE_PATH = "index/homepage"
+IAM_FOG_CONTROL_PATH = "devOperate/operCmd"
+IAM_FOG_PROPERTIES_PATH = "devOperate/findDevAllProperties"
+IAM_FOG_PROPERTIES_VERSION = "3.5.0"
+IAM_SESSION_REPLACED_STATUS = 1040
 IOT_API_BASE_URL = "https://api.link.aliyun.com"
 OA_REGION_API_PATH = "/living/account/region/get"
 OA_LOGIN_API_PATH = "/api/prd/loginbyoauth.json"
@@ -35,7 +39,7 @@ SESSION_ERROR_CODES = frozenset((401, 403, 460, 29003))
 API_VERSION_CREATE_SESSION = "1.0.4"
 API_VERSION_DEVICE_LIST = "1.0.8"
 API_VERSION_PROPERTIES_GET = "1.0.4"
-API_VERSION_PROPERTIES_SET = "1.0.5"
+API_VERSION_PROPERTIES_SET = "1.0.2"
 API_VERSION_REFRESH_SESSION = "1.0.4"
 API_VERSION_REGION = "1.0.2"
 API_VERSION_TSL_GET = "1.0.4"
@@ -46,6 +50,8 @@ PATH_PROPERTIES_GET = "/thing/properties/get"
 PATH_PROPERTIES_SET = "/thing/properties/set"
 PATH_REFRESH_SESSION = "/account/checkOrRefreshSession"
 PATH_TSL_GET = "/thing/tsl/get"
+
+IOT_PAAS_TYPE_FOG = 1
 
 POWER_PROPERTY_ALIASES = ("PowerSwitch", "powerstate", "power")
 SPEED_PROPERTY_ALIASES = ("WindSpeed", "windspeed", "fanSpeed")

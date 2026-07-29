@@ -24,9 +24,9 @@ committed to this repository.
 - Success status: `1000`
 - The successful result contains `userId`, `userName`, `token` and `imSign`.
 
-The integration uses only the account identity needed to establish the
-Link Living session and query the app homepage. It never logs the login
-response or request body.
+The integration uses the account identity to establish the Link Living session,
+query the app homepage and control devices whose homepage `iotPaasType` selects
+IAM's FOG route. It never logs the login response or request body.
 
 ### App-visible device list
 
@@ -35,9 +35,10 @@ The app homepage does not render `/uc/listBindingByAccount` directly. It calls
 and renders the returned `result` list. Link Living can retain additional
 bindings that are absent from this homepage result.
 
-Discovery therefore treats homepage `iotId` values as the visibility source and
-intersects them with Link Living bindings. This is an ID-based association, not
-a product-key or model-family allowlist.
+Discovery therefore treats homepage `iotId` values as the visibility source,
+retains each device's `iotPaasType`, and intersects those IDs with Link Living
+bindings. This is an ID-based association, not a product-key or model-family
+allowlist.
 
 ## Link Living authorization
 
@@ -59,9 +60,11 @@ previous session. The next request made with the old session returns code
 `29003` with a missing-identity error. The client classifies this as an
 authentication/session error, serializes refresh across concurrent device polls,
 refreshes or recreates the IoT session once, and retries the original request.
-That recovery replaces the other client's session in turn. Stable simultaneous
-App and Home Assistant use therefore requires a separate IAM identity with the
-device shared to it.
+The IAM account API can independently return status `1040` after another App
+login replaces its token. FOG reads and writes serialize an IAM account relogin
+and retry once when that happens. These recoveries can replace the other
+client's session in turn. Stable simultaneous App and Home Assistant use
+therefore still requires a separate IAM identity with the device shared to it.
 
 ## Device APIs
 
@@ -71,8 +74,26 @@ device shared to it.
 | `/uc/listBindingByAccount` | `1.0.8` | Resolve app-visible IDs to controllable bindings |
 | `/thing/tsl/get` | `1.0.4` | Fetch the device TSL |
 | `/thing/properties/get` | `1.0.4` | Read property snapshot |
-| `/thing/properties/set` | `1.0.5` | Write properties |
+| `/thing/properties/set` | `1.0.2` | Write properties for Feiyan devices |
+| `IAM devOperate/findDevAllProperties` | `3.5.0` | Read FOG properties |
+| `IAM devOperate/operCmd` | n/a | Write properties for FOG devices |
 | `/account/checkOrRefreshSession` | `1.0.4` | Refresh IoT session |
+
+### Device control routing
+
+IAM's App supports two cloud control paths. The homepage `iotPaasType` is the
+source of truth:
+
+- `0` (Feiyan): send `{iotId, items}` to `/thing/properties/set`.
+- `1` (FOG): read with form fields `{deviceId, version=3.5.0}` from IAM
+  `devOperate/findDevAllProperties`, and write JSON `{deviceId, operCmd}` to
+  IAM `devOperate/operCmd`, using the current IAM account headers for both.
+
+The Android App performs the same branch for both reads and writes. A FOG device
+can still expose its TSL and a stale property snapshot through Link Living,
+while Link Living property writes return an offline-device error. Consequently,
+successful Link Living reads are not evidence that either the snapshot is
+current or the Link Living write path is valid for that device.
 
 References:
 

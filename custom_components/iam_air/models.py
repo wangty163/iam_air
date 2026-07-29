@@ -125,6 +125,7 @@ class IamAirDevice:
     device_name: str
     online: bool
     properties: dict[str, TslProperty] = field(default_factory=dict)
+    iot_paas_type: int | None = None
 
     def find_property(self, *aliases: str) -> TslProperty | None:
         """Find a TSL property without depending on identifier case."""
@@ -245,7 +246,12 @@ def parse_tsl(data: Any) -> dict[str, TslProperty]:
     return parsed
 
 
-def parse_device(raw: dict[str, Any], tsl: Any) -> IamAirDevice:
+def parse_device(
+    raw: dict[str, Any],
+    tsl: Any,
+    *,
+    iot_paas_type: int | None = None,
+) -> IamAirDevice:
     """Create a device model from binding-list data and its TSL."""
     iot_id = str(raw.get("iotId") or "")
     name = str(
@@ -259,4 +265,5 @@ def parse_device(raw: dict[str, Any], tsl: Any) -> IamAirDevice:
         device_name=str(raw.get("deviceName") or ""),
         online=raw.get("status") in (1, "1", True, "online", "ONLINE"),
         properties=parse_tsl(tsl),
+        iot_paas_type=iot_paas_type,
     )

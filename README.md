@@ -96,7 +96,9 @@ chmod 600 /config/iam_air/credentials.json
 5. 创建 IoT 会话，从 `/uc/listBindingByAccount` 获取可控绑定，并按设备 ID
    与 App 首页列表取交集。
 6. 使用 `/thing/tsl/get` 读取设备物模型。
-7. 使用 `/thing/properties/get` 和 `/thing/properties/set` 读取及控制设备。
+7. 按 App 首页返回的 `iotPaasType` 自动分流：飞燕设备走 Link Living
+   `/thing/properties/get` 与 `/thing/properties/set`；FOG 设备走 IAM
+   `devOperate/findDevAllProperties` 与 `devOperate/operCmd`。
 
 协议边界和已确认字段见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
