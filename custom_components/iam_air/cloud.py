@@ -35,6 +35,8 @@ from .const import (
     IAM_FOG_PROPERTIES_VERSION,
     IAM_HOMEPAGE_PATH,
     IAM_HOMEPAGE_PROTOCOL_VERSION,
+    IAM_PRODUCT_CONFIG_PATH,
+    IAM_PRODUCT_CONFIG_VERSION,
     IAM_PROTOCOL_VERSION,
     IAM_SESSION_REPLACED_STATUS,
     IOT_API_BASE_URL,
@@ -55,6 +57,7 @@ from .models import (
     IotSession,
     parse_device,
     select_app_device_metadata,
+    select_filter_max_runtimes,
 )
 
 ACCEPT_JSON = "application/json; charset=UTF-8"
@@ -172,6 +175,20 @@ class IamCloudClient:
             raise IamAirApiError("IAM device detail response is invalid")
         return result
 
+    async def async_list_app_product_configs(self) -> list[dict[str, Any]]:
+        """Return App model configuration used for filter lifetime limits."""
+        response = await self._async_iam_session_post_json(
+            IAM_PRODUCT_CONFIG_PATH,
+            data={"version": IAM_PRODUCT_CONFIG_VERSION},
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM product config query failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, list):
+            raise IamAirApiError("IAM product config response is invalid")
+        return [item for item in result if isinstance(item, dict)]
+
     async def async_get_tsl(self, iot_id: str) -> Any:
         """Fetch a device TSL."""
         result = await self._async_session_gateway_call(
@@ -188,6 +205,10 @@ class IamCloudClient:
             for item in await self.async_list_app_devices()
             if item.get("iotId")
         }
+        try:
+            product_configs = await self.async_list_app_product_configs()
+        except (IamAirApiError, IamAirConnectionError):
+            product_configs = []
         discovered: list[IamAirDevice] = []
         for raw_device in await self.async_list_devices():
             iot_id = str(raw_device.get("iotId") or "")
@@ -206,11 +227,19 @@ class IamCloudClient:
                 app_device,
                 detail,
             )
+            product_category = str(detail.get("productCategory") or "")
+            product_type = str(detail.get("productType") or "")
             device = parse_device(
                 raw_device,
                 tsl,
                 display_name=display_name,
                 model_name=model_name,
+                product_category=product_category,
+                product_type=product_type,
+                filter_max_runtimes=select_filter_max_runtimes(
+                    detail,
+                    product_configs,
+                ),
                 iot_paas_type=parse_iot_paas_type(
                     app_device.get("iotPaasType")
                 ),

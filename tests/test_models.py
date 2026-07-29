@@ -6,6 +6,7 @@ from custom_components.iam_air.models import (
     parse_tsl,
     percentage_for_property,
     select_app_device_metadata,
+    select_filter_max_runtimes,
     value_as_bool,
     value_for_percentage,
 )
@@ -107,6 +108,46 @@ def test_app_detail_preserves_user_custom_device_name() -> None:
 
     assert display_name == "Living room purifier"
     assert model_name == "IAM M8 purifier"
+
+
+def test_filter_max_runtimes_match_app_category_and_type() -> None:
+    """Filter lifetime limits come from the exact App model configuration."""
+    result = select_filter_max_runtimes(
+        {"productCategory": "KX", "productType": "5"},
+        [
+            {
+                "productCategory": "KX",
+                "productType": "4",
+                "filterMaxRuntime": 1000,
+                "filter2MaxRuntime": 2000,
+            },
+            {
+                "productCategory": "KX",
+                "productType": "5",
+                "filterMaxRuntime": 3000,
+                "filter2MaxRuntime": 9000,
+            },
+        ],
+    )
+
+    assert result == (3000, 9000)
+
+
+def test_filter_max_runtimes_reject_missing_or_nonpositive_values() -> None:
+    """Invalid model limits cannot create misleading percentage sensors."""
+    result = select_filter_max_runtimes(
+        {"productCategory": "KX", "productType": 5},
+        [
+            {
+                "productCategory": "KX",
+                "productType": "5",
+                "filterMaxRuntime": 0,
+                "filter2MaxRuntime": "invalid",
+            }
+        ],
+    )
+
+    assert result == (None, None)
 
 
 def test_enum_and_numeric_specs() -> None:

@@ -88,6 +88,7 @@ therefore still requires a separate IAM identity with the device shared to it.
 | --- | --- | --- |
 | `IAM index/homepage` | `3.1.0` | List devices visible in the app |
 | `IAM devCustInfo/devInfo` | `1.0.0` | Resolve device note, default name and product type |
+| `IAM product/listInfo` | `2.1.2` | Resolve model-specific filter maximum runtimes |
 | `/uc/listBindingByAccount` | `1.0.8` | Resolve app-visible IDs to controllable bindings |
 | `/thing/tsl/get` | `1.0.4` | Fetch the device TSL |
 | `/thing/properties/get` | `1.0.4` | Read property snapshot |
@@ -143,3 +144,33 @@ The TSL can also advertise provisioning, account, Wi-Fi diagnostic or
 model-internal properties. Those are not App device controls and are
 intentionally not exposed. In particular, forced unbinding is never surfaced
 as an entity. No write is attempted unless the live TSL reports write access.
+
+### KX type-5 screen behavior
+
+The Android App treats the KX product type `5` screen as context-sensitive:
+
+- sleep mode forces the screen state off; requesting the screen also leaves
+  sleep mode;
+- smart trusteeship blocks the ordinary screen control until trusteeship is
+  disabled;
+- `ScreenSwitch` is the requested setting, but the M8 Pro can reset it shortly
+  after acknowledging a command. HA therefore renders the actual lit state
+  from `T_Panel_Status` whenever that telemetry is available. A powered-off or
+  sleep-mode device is always rendered as screen off.
+
+The Home Assistant switch mirrors those rules instead of presenting a
+successful `ScreenSwitch` write as a lit panel when the panel telemetry or
+another mode says otherwise.
+
+### Filter lifetime percentage
+
+`FilterStatus_1` and `FilterStatus_2` are replacement-status enums, not
+remaining-life percentages. The App fetches `filterMaxRuntime` and
+`filter2MaxRuntime` for the exact `productCategory` plus `productType` from
+`product/listInfo`, then calculates each displayed percentage as:
+
+`round((maximum runtime - FilterRunTime_n) / maximum runtime * 100)`
+
+The integration uses the same model-specific limits and clamps the result to
+0-100%. It does not substitute the generic TSL numeric maximum, because that
+can differ from the App's configured lifetime for a particular filter.

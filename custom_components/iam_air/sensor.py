@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,6 +100,11 @@ SENSOR_SPECS = (
     ),
 )
 
+FILTER_RUNTIME_ALIASES = (
+    ("FilterRunTime_1", "filterRunTime_1"),
+    ("FilterRunTime_2", "filterRunTime_2"),
+)
+
 
 async def async_setup_entry(
     _hass: Any,
@@ -116,6 +122,26 @@ async def async_setup_entry(
                 continue
             seen.add(prop.identifier)
             entities.append(IamAirSensor(coordinator, device, prop=prop, spec=spec))
+        for index, (aliases, maximum) in enumerate(
+            zip(
+                FILTER_RUNTIME_ALIASES,
+                device.filter_max_runtimes,
+                strict=True,
+            ),
+            start=1,
+        ):
+            prop = device.find_property(*aliases)
+            if prop is None or not prop.readable or maximum is None:
+                continue
+            entities.append(
+                IamAirFilterLifeSensor(
+                    coordinator,
+                    device,
+                    prop=prop,
+                    filter_index=index,
+                    maximum_runtime=maximum,
+                )
+            )
     add_iam_entities(entry, async_add_entities, entities)
 
 
@@ -150,6 +176,52 @@ class IamAirSensor(IamAirEntity, SensorEntity):
         if value is None:
             return None
         return self._property.option_for_value(value) or value
+
+
+class IamAirFilterLifeSensor(IamAirEntity, SensorEntity):
+    """Remaining filter lifetime calculated with the App's model limit."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: Any,
+        device: IamAirDevice,
+        *,
+        prop: TslProperty,
+        filter_index: int,
+        maximum_runtime: int,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            device,
+            unique_suffix=f"filter_life_{filter_index}",
+        )
+        self._property = prop
+        self._maximum_runtime = maximum_runtime
+        self._attr_name = f"滤芯{filter_index}剩余寿命"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the App-equivalent remaining lifetime percentage."""
+        return filter_life_percentage(
+            self.property_value(self._property.identifier),
+            self._maximum_runtime,
+        )
+
+
+def filter_life_percentage(used_runtime: Any, maximum_runtime: Any) -> int | None:
+    """Calculate App-equivalent remaining filter lifetime, clamped to 0-100."""
+    try:
+        used = float(used_runtime)
+        maximum = float(maximum_runtime)
+    except (TypeError, ValueError):
+        return None
+    if maximum <= 0:
+        return None
+    remaining = (maximum - used) / maximum * 100
+    return min(100, max(0, math.floor(remaining + 0.5)))
 
 
 def normalize_unit(unit: str | None) -> str | None:

@@ -124,6 +124,9 @@ class IamAirDevice:
     product_key: str
     device_name: str
     online: bool
+    product_category: str = ""
+    product_type: str = ""
+    filter_max_runtimes: tuple[int | None, int | None] = (None, None)
     properties: dict[str, TslProperty] = field(default_factory=dict)
     iot_paas_type: int | None = None
 
@@ -148,6 +151,11 @@ class IamAirDevice:
         )
         return has_power and (has_speed or has_mode or has_air_sensor is not None)
 
+    @property
+    def uses_kx_type_5_screen_behavior(self) -> bool:
+        """Return whether the App applies its special KX type-5 screen rules."""
+        return self.product_category == "KX" and self.product_type == "5"
+
 
 @dataclass(frozen=True, slots=True)
 class DeviceSnapshot:
@@ -171,7 +179,7 @@ def percentage_for_property(prop: TslProperty, value: Any) -> int | None:
         count = max(1, round((maximum - minimum) / step) + 1)
         try:
             index = round((float(value) - minimum) / step)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
         index = min(count - 1, max(0, index))
         return round((index + 1) * 100 / count)
@@ -252,6 +260,9 @@ def parse_device(
     *,
     display_name: str | None = None,
     model_name: str | None = None,
+    product_category: str | None = None,
+    product_type: str | None = None,
+    filter_max_runtimes: tuple[int | None, int | None] = (None, None),
     iot_paas_type: int | None = None,
 ) -> IamAirDevice:
     """Create a device model from binding-list data and its TSL."""
@@ -277,6 +288,9 @@ def parse_device(
         product_key=str(raw.get("productKey") or ""),
         device_name=str(raw.get("deviceName") or ""),
         online=raw.get("status") in (1, "1", True, "online", "ONLINE"),
+        product_category=str(product_category or ""),
+        product_type=str(product_type or ""),
+        filter_max_runtimes=filter_max_runtimes,
         properties=parse_tsl(tsl),
         iot_paas_type=iot_paas_type,
     )
@@ -305,3 +319,33 @@ def select_app_device_metadata(
         product_type_name or default_name or detail_name or homepage_name
     )
     return display_name or None, model_name or None
+
+
+def select_filter_max_runtimes(
+    detail: dict[str, Any],
+    product_configs: list[dict[str, Any]],
+) -> tuple[int | None, int | None]:
+    """Return the two App-configured filter lifetimes for a device model."""
+    category = str(detail.get("productCategory") or "")
+    product_type = str(detail.get("productType") or "")
+    matching = next(
+        (
+            item
+            for item in product_configs
+            if str(item.get("productCategory") or "") == category
+            and str(item.get("productType") or "") == product_type
+        ),
+        {},
+    )
+
+    def positive_int(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except TypeError, ValueError:
+            return None
+        return parsed if parsed > 0 else None
+
+    return (
+        positive_int(matching.get("filterMaxRuntime")),
+        positive_int(matching.get("filter2MaxRuntime")),
+    )

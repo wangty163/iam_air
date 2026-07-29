@@ -7,7 +7,7 @@ from homeassistant.const import (
 )
 
 from custom_components.iam_air.models import TslProperty
-from custom_components.iam_air.sensor import normalize_unit
+from custom_components.iam_air.sensor import filter_life_percentage, normalize_unit
 
 
 def test_normalize_unit() -> None:
@@ -30,3 +30,19 @@ def test_enum_sensor_value_uses_app_label() -> None:
     )
 
     assert prop.option_for_value(0) == "正常"
+
+
+def test_filter_life_percentage_matches_app_formula() -> None:
+    """Remaining lifetime uses the Android App's rounded percentage formula."""
+    assert filter_life_percentage(207, 3000) == 93
+    assert filter_life_percentage(89, 9000) == 99
+    assert filter_life_percentage(3000, 3000) == 0
+    assert filter_life_percentage(-10, 3000) == 100
+    assert filter_life_percentage(4000, 3000) == 0
+
+
+def test_filter_life_percentage_rejects_invalid_limits() -> None:
+    """Missing runtime data or nonpositive limits remain unavailable."""
+    assert filter_life_percentage(None, 3000) is None
+    assert filter_life_percentage(100, 0) is None
+    assert filter_life_percentage("invalid", 3000) is None

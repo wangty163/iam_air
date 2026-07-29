@@ -29,6 +29,8 @@ from custom_components.iam_air.const import (
     IAM_FOG_CONTROL_PATH,
     IAM_FOG_PROPERTIES_PATH,
     IAM_FOG_PROPERTIES_VERSION,
+    IAM_PRODUCT_CONFIG_PATH,
+    IAM_PRODUCT_CONFIG_VERSION,
     IOT_PAAS_TYPE_FOG,
     PATH_PROPERTIES_SET,
 )
@@ -212,11 +214,28 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
             "productName": "Default purifier",
             "defaultProductName": "Default purifier",
             "productTypeName": "IAM M8 purifier",
+            "productCategory": "KX",
+            "productType": "5",
         }
+
+    async def fake_product_configs() -> list[dict[str, object]]:
+        return [
+            {
+                "productCategory": "KX",
+                "productType": "5",
+                "filterMaxRuntime": 3000,
+                "filter2MaxRuntime": 9000,
+            }
+        ]
 
     monkeypatch.setattr(client, "async_list_app_devices", fake_app_devices)
     monkeypatch.setattr(client, "async_list_devices", fake_link_devices)
     monkeypatch.setattr(client, "async_get_app_device_detail", fake_get_detail)
+    monkeypatch.setattr(
+        client,
+        "async_list_app_product_configs",
+        fake_product_configs,
+    )
     monkeypatch.setattr(client, "async_get_tsl", fake_get_tsl)
 
     devices = await client.async_discover_air_devices()
@@ -224,6 +243,9 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
     assert [device.iot_id for device in devices] == ["fake-visible-device"]
     assert devices[0].name == "IAM M8 purifier"
     assert devices[0].model == "IAM M8 purifier"
+    assert devices[0].product_category == "KX"
+    assert devices[0].product_type == "5"
+    assert devices[0].filter_max_runtimes == (3000, 9000)
     assert devices[0].iot_paas_type == IOT_PAAS_TYPE_FOG
     assert detail_requests == ["fake-visible-device"]
     assert tsl_requests == ["fake-visible-device"]
@@ -277,6 +299,56 @@ async def test_app_device_detail_uses_current_account_identity(
             "userId": "fake-user",
             "version": IAM_DEVICE_DETAIL_VERSION,
         },
+    }
+
+
+@pytest.mark.asyncio
+async def test_app_product_config_uses_filter_lifetime_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filter maximum runtimes come from the same App config list as Android."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_session_post(
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(path=path, data=data)
+        return {
+            "status": 1000,
+            "result": [
+                {
+                    "productCategory": "KX",
+                    "productType": "5",
+                    "filterMaxRuntime": 3000,
+                    "filter2MaxRuntime": 9000,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_async_iam_session_post_json", fake_session_post)
+
+    result = await client.async_list_app_product_configs()
+
+    assert result[0]["filterMaxRuntime"] == 3000
+    assert captured == {
+        "path": IAM_PRODUCT_CONFIG_PATH,
+        "data": {"version": IAM_PRODUCT_CONFIG_VERSION},
     }
 
 

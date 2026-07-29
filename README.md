@@ -23,7 +23,7 @@
   开启/关闭阈值。
 - `number`：定时开机、定时关机，以及托管模式的 PM2.5、甲醛开启/关闭阈值。
 - `sensor`：PM2.5、甲醛、VOC、温湿度、空气质量等级、滤芯状态与累计时长、
-  设备累计运行时长、定时剩余时间。
+  两个滤芯的剩余寿命百分比、设备累计运行时长、定时剩余时间。
 - `button`：滤芯 1/2 使用时间复位。该动作会修改设备的维护数据，只应在更换
   对应滤芯后按下。
 - IoT Token 到期前自动刷新；同账号在 App 重新登录导致旧会话失效时，自动
@@ -96,10 +96,12 @@ chmod 600 /config/iam_air/credentials.json
 3. 使用 IAM 身份完成 Link Living 自有账号授权。
 4. 从 IAM `index/homepage` 获取 App 当前展示的设备 ID。
 5. 对 App 可见设备调用 `devCustInfo/devInfo` 补全名称和产品类型属性。
-6. 创建 IoT 会话，从 `/uc/listBindingByAccount` 获取可控绑定，并按设备 ID
+6. 调用 `product/listInfo` 获取对应机型的滤芯最大寿命，用 App 相同公式将
+   累计使用时长换算为剩余百分比。
+7. 创建 IoT 会话，从 `/uc/listBindingByAccount` 获取可控绑定，并按设备 ID
    与 App 首页列表取交集。
-7. 使用 `/thing/tsl/get` 读取设备物模型。
-8. 按 App 首页返回的 `iotPaasType` 自动分流：飞燕设备走 Link Living
+8. 使用 `/thing/tsl/get` 读取设备物模型。
+9. 按 App 首页返回的 `iotPaasType` 自动分流：飞燕设备走 Link Living
    `/thing/properties/get` 与 `/thing/properties/set`；FOG 设备走 IAM
    `devOperate/findDevAllProperties` 与 `devOperate/operCmd`。
 

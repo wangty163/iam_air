@@ -2,7 +2,9 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from homeassistant.components.fan import FanEntityFeature
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.iam_air.button import IamAirFilterResetButton
 from custom_components.iam_air.fan import IamAirFan
@@ -90,6 +92,8 @@ def make_device_and_coordinator():
             "status": 1,
         },
         tsl,
+        product_category="KX",
+        product_type="5",
     )
     coordinator = MagicMock()
     coordinator.last_update_success = True
@@ -169,6 +173,85 @@ async def test_explicit_switch_and_select_controls_write_raw_values() -> None:
         "fake-device-id",
         {"WindSpeed": 5},
     )
+
+
+async def test_kx_type_5_screen_turn_on_leaves_sleep_mode_first() -> None:
+    """The App exits sleep mode before a KX type-5 screen can stay lit."""
+    device, coordinator = make_device_and_coordinator()
+    screen = IamAirSwitch(
+        coordinator,
+        device,
+        device.properties["ScreenSwitch"],
+    )
+    coordinator.data[device.iot_id].properties.update(
+        {
+            "PowerSwitch": 1,
+            "ScreenSwitch": 0,
+            "T_Panel_Status": 0,
+            "Trusteeship": 0,
+            "WorkMode": 2,
+        }
+    )
+
+    assert not screen.is_on
+    await screen.async_turn_on()
+
+    assert coordinator.async_set_properties.await_args_list[0].args == (
+        "fake-device-id",
+        {"WorkMode": 0},
+    )
+    assert coordinator.async_set_properties.await_args_list[1].args == (
+        "fake-device-id",
+        {"ScreenSwitch": 1},
+    )
+
+
+async def test_kx_type_5_screen_uses_panel_state_and_blocks_trusteeship() -> None:
+    """Panel telemetry remains visible while trusteeship blocks direct commands."""
+    device, coordinator = make_device_and_coordinator()
+    screen = IamAirSwitch(
+        coordinator,
+        device,
+        device.properties["ScreenSwitch"],
+    )
+    coordinator.data[device.iot_id].properties.update(
+        {
+            "PowerSwitch": 1,
+            "ScreenSwitch": 0,
+            "T_Panel_Status": 1,
+            "Trusteeship": 1,
+            "WorkMode": 1,
+        }
+    )
+
+    assert screen.is_on
+    with pytest.raises(HomeAssistantError, match="trusteeship"):
+        await screen.async_turn_off()
+    coordinator.async_set_properties.assert_not_awaited()
+
+
+def test_kx_type_5_screen_prefers_actual_panel_telemetry() -> None:
+    """A transient screen setting cannot override the actual lit-panel state."""
+    device, coordinator = make_device_and_coordinator()
+    screen = IamAirSwitch(
+        coordinator,
+        device,
+        device.properties["ScreenSwitch"],
+    )
+    coordinator.data[device.iot_id].properties.update(
+        {
+            "PowerSwitch": 1,
+            "ScreenSwitch": 0,
+            "T_Panel_Status": 1,
+            "Trusteeship": 0,
+            "WorkMode": 1,
+        }
+    )
+
+    assert screen.is_on
+
+    coordinator.data[device.iot_id].properties["PowerSwitch"] = 0
+    assert not screen.is_on
 
 
 async def test_timer_number_and_filter_reset_button() -> None:
