@@ -24,6 +24,8 @@ from custom_components.iam_air.cloud import (
 )
 from custom_components.iam_air.const import (
     API_VERSION_PROPERTIES_SET,
+    IAM_DEVICE_DETAIL_PATH,
+    IAM_DEVICE_DETAIL_VERSION,
     IAM_FOG_CONTROL_PATH,
     IAM_FOG_PROPERTIES_PATH,
     IAM_FOG_PROPERTIES_VERSION,
@@ -177,6 +179,7 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
         ]
     }
     tsl_requests: list[str] = []
+    detail_requests: list[str] = []
 
     async def fake_app_devices() -> list[dict[str, object]]:
         return [
@@ -203,16 +206,78 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
         tsl_requests.append(iot_id)
         return tsl
 
+    async def fake_get_detail(iot_id: str) -> dict[str, object]:
+        detail_requests.append(iot_id)
+        return {
+            "productName": "Default purifier",
+            "defaultProductName": "Default purifier",
+            "productTypeName": "IAM M8 purifier",
+        }
+
     monkeypatch.setattr(client, "async_list_app_devices", fake_app_devices)
     monkeypatch.setattr(client, "async_list_devices", fake_link_devices)
+    monkeypatch.setattr(client, "async_get_app_device_detail", fake_get_detail)
     monkeypatch.setattr(client, "async_get_tsl", fake_get_tsl)
 
     devices = await client.async_discover_air_devices()
 
     assert [device.iot_id for device in devices] == ["fake-visible-device"]
-    assert devices[0].name == "App-visible purifier"
+    assert devices[0].name == "IAM M8 purifier"
+    assert devices[0].model == "IAM M8 purifier"
     assert devices[0].iot_paas_type == IOT_PAAS_TYPE_FOG
+    assert detail_requests == ["fake-visible-device"]
     assert tsl_requests == ["fake-visible-device"]
+
+
+@pytest.mark.asyncio
+async def test_app_device_detail_uses_current_account_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Device metadata comes from the App detail route with its exact contract."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_session_post(
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(path=path, data=data)
+        return {
+            "status": 1000,
+            "result": {
+                "productName": "Default purifier",
+                "defaultProductName": "Default purifier",
+                "productTypeName": "IAM M8 purifier",
+            },
+        }
+
+    monkeypatch.setattr(client, "_async_iam_session_post_json", fake_session_post)
+
+    result = await client.async_get_app_device_detail("fake-device-id")
+
+    assert result["productTypeName"] == "IAM M8 purifier"
+    assert captured == {
+        "path": IAM_DEVICE_DETAIL_PATH,
+        "data": {
+            "iotId": "fake-device-id",
+            "userId": "fake-user",
+            "version": IAM_DEVICE_DETAIL_VERSION,
+        },
+    }
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ from custom_components.iam_air.models import (
     parse_device,
     parse_tsl,
     percentage_for_property,
+    select_app_device_metadata,
     value_as_bool,
     value_for_percentage,
 )
@@ -76,6 +77,36 @@ def test_app_display_name_overrides_cloud_device_identifier() -> None:
     )
 
     assert device.name == "Living room purifier"
+
+
+def test_app_detail_uses_product_type_when_device_has_no_custom_name() -> None:
+    """The precise App product type replaces a generic default product name."""
+    display_name, model_name = select_app_device_metadata(
+        {"productName": "Homepage default"},
+        {
+            "productName": "Default purifier",
+            "defaultProductName": "Default purifier",
+            "productTypeName": "IAM M8 purifier",
+        },
+    )
+
+    assert display_name == "IAM M8 purifier"
+    assert model_name == "IAM M8 purifier"
+
+
+def test_app_detail_preserves_user_custom_device_name() -> None:
+    """A device note set by the user remains the primary display name."""
+    display_name, model_name = select_app_device_metadata(
+        {"productName": "Homepage name"},
+        {
+            "productName": "Living room purifier",
+            "defaultProductName": "Default purifier",
+            "productTypeName": "IAM M8 purifier",
+        },
+    )
+
+    assert display_name == "Living room purifier"
+    assert model_name == "IAM M8 purifier"
 
 
 def test_enum_and_numeric_specs() -> None:

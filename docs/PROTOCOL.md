@@ -40,6 +40,22 @@ retains each device's `iotPaasType`, and intersects those IDs with Link Living
 bindings. This is an ID-based association, not a product-key or model-family
 allowlist.
 
+### App device detail metadata
+
+The homepage title is not the complete device identity. For every app-visible
+device, the Android detail screen calls `POST devCustInfo/devInfo` with
+`iotId`, the current IAM `userId`, and `version=1.0.0`. Its result distinguishes:
+
+- `productName`: the editable device note shown by the detail screen;
+- `defaultProductName`: the unedited default product name;
+- `productTypeName`: the more specific product type/model label.
+
+When `productName` differs from `defaultProductName`, the integration preserves
+it as the user-defined device name. Otherwise it displays `productTypeName`,
+falling back through the remaining non-empty names if detail metadata is
+unavailable. This prevents a generic default product name from obscuring the
+specific device type while keeping user custom names intact.
+
 ## Link Living authorization
 
 The 心够智家 Android application uses Alibaba Link Living's custom-account
@@ -71,6 +87,7 @@ therefore still requires a separate IAM identity with the device shared to it.
 | Path | API version | Purpose |
 | --- | --- | --- |
 | `IAM index/homepage` | `3.1.0` | List devices visible in the app |
+| `IAM devCustInfo/devInfo` | `1.0.0` | Resolve device note, default name and product type |
 | `/uc/listBindingByAccount` | `1.0.8` | Resolve app-visible IDs to controllable bindings |
 | `/thing/tsl/get` | `1.0.4` | Fetch the device TSL |
 | `/thing/properties/get` | `1.0.4` | Read property snapshot |

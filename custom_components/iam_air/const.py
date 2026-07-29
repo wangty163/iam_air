@@ -20,6 +20,8 @@ CREDENTIALS_DIRECTORY = "iam_air"
 CREDENTIALS_FILENAME = "credentials.json"
 
 IAM_API_BASE_URL = "https://xapp.ixingoo.com/xapp/"
+IAM_DEVICE_DETAIL_PATH = "devCustInfo/devInfo"
+IAM_DEVICE_DETAIL_VERSION = "1.0.0"
 IAM_HOMEPAGE_PATH = "index/homepage"
 IAM_FOG_CONTROL_PATH = "devOperate/operCmd"
 IAM_FOG_PROPERTIES_PATH = "devOperate/findDevAllProperties"

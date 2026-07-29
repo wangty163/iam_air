@@ -251,6 +251,7 @@ def parse_device(
     tsl: Any,
     *,
     display_name: str | None = None,
+    model_name: str | None = None,
     iot_paas_type: int | None = None,
 ) -> IamAirDevice:
     """Create a device model from binding-list data and its TSL."""
@@ -267,10 +268,40 @@ def parse_device(
     return IamAirDevice(
         iot_id=iot_id,
         name=name,
-        model=str(raw.get("productName") or raw.get("categoryName") or "IAM Air"),
+        model=str(
+            model_name
+            or raw.get("productName")
+            or raw.get("categoryName")
+            or "IAM Air"
+        ),
         product_key=str(raw.get("productKey") or ""),
         device_name=str(raw.get("deviceName") or ""),
         online=raw.get("status") in (1, "1", True, "online", "ONLINE"),
         properties=parse_tsl(tsl),
         iot_paas_type=iot_paas_type,
     )
+
+
+def select_app_device_metadata(
+    homepage: dict[str, Any],
+    detail: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Select App-aligned display and model names from device metadata."""
+
+    def clean(value: Any) -> str:
+        return str(value or "").strip()
+
+    detail_name = clean(detail.get("productName"))
+    default_name = clean(detail.get("defaultProductName"))
+    product_type_name = clean(detail.get("productTypeName"))
+    homepage_name = clean(homepage.get("productName"))
+
+    display_name = (
+        detail_name
+        if detail_name and detail_name != default_name
+        else product_type_name or detail_name or default_name or homepage_name
+    )
+    model_name = (
+        product_type_name or default_name or detail_name or homepage_name
+    )
+    return display_name or None, model_name or None

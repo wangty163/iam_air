@@ -28,6 +28,8 @@ from .const import (
     HTTP_TIMEOUT_SECONDS,
     IAM_API_BASE_URL,
     IAM_APP_VERSION,
+    IAM_DEVICE_DETAIL_PATH,
+    IAM_DEVICE_DETAIL_VERSION,
     IAM_FOG_CONTROL_PATH,
     IAM_FOG_PROPERTIES_PATH,
     IAM_FOG_PROPERTIES_VERSION,
@@ -47,7 +49,13 @@ from .const import (
     PATH_TSL_GET,
     SESSION_ERROR_CODES,
 )
-from .models import IamAccountSession, IamAirDevice, IotSession, parse_device
+from .models import (
+    IamAccountSession,
+    IamAirDevice,
+    IotSession,
+    parse_device,
+    select_app_device_metadata,
+)
 
 ACCEPT_JSON = "application/json; charset=UTF-8"
 CONTENT_TYPE_JSON = "application/json; charset=UTF-8"
@@ -143,6 +151,27 @@ class IamCloudClient:
         )
         return parse_iam_homepage_response(response)
 
+    async def async_get_app_device_detail(self, iot_id: str) -> dict[str, Any]:
+        """Return the App's authoritative display metadata for a device."""
+        account = self._account_session
+        if account is None:
+            raise IamAirAuthError("IAM account session is not initialized")
+        response = await self._async_iam_session_post_json(
+            IAM_DEVICE_DETAIL_PATH,
+            data={
+                "iotId": iot_id,
+                "userId": account.user_id,
+                "version": IAM_DEVICE_DETAIL_VERSION,
+            },
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM device detail query failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise IamAirApiError("IAM device detail response is invalid")
+        return result
+
     async def async_get_tsl(self, iot_id: str) -> Any:
         """Fetch a device TSL."""
         result = await self._async_session_gateway_call(
@@ -164,17 +193,26 @@ class IamCloudClient:
             iot_id = str(raw_device.get("iotId") or "")
             if not iot_id or iot_id not in app_devices:
                 continue
+            app_device = app_devices[iot_id]
+            try:
+                detail = await self.async_get_app_device_detail(iot_id)
+            except (IamAirApiError, IamAirConnectionError):
+                detail = {}
             try:
                 tsl = await self.async_get_tsl(iot_id)
             except IamAirApiError:
                 continue
+            display_name, model_name = select_app_device_metadata(
+                app_device,
+                detail,
+            )
             device = parse_device(
                 raw_device,
                 tsl,
-                display_name=str(app_devices[iot_id].get("productName") or "").strip()
-                or None,
+                display_name=display_name,
+                model_name=model_name,
                 iot_paas_type=parse_iot_paas_type(
-                    app_devices[iot_id].get("iotPaasType")
+                    app_device.get("iotPaasType")
                 ),
             )
             if device.looks_like_air_purifier:

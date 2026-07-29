@@ -13,6 +13,8 @@
 - 先读取心够智家首页设备列表，再按 `iotId` 关联 Link Living 绑定设备；
   不按产品系列硬编码或暴露历史绑定；集成重载时会清理不再出现在 App
   首页中的旧 HA 设备。
+- 从 App 设备详情接口补全设备备注名、默认产品名和产品类型名；有用户备注
+  时显示备注，否则显示更准确的产品类型名。
 - 根据设备自己的 TSL 创建实体，不在代码中硬编码设备 ID 或账号数据。
 - `fan`：电源、6 档风速、自动/手动/睡眠工作模式。
 - `switch`：独立电源开关、童锁、屏幕、离子团、静电消杀、智能托管，
@@ -93,10 +95,11 @@ chmod 600 /config/iam_air/credentials.json
 2. 从固定的本地私有文件读取 Link Living AppKey/AppSecret。
 3. 使用 IAM 身份完成 Link Living 自有账号授权。
 4. 从 IAM `index/homepage` 获取 App 当前展示的设备 ID。
-5. 创建 IoT 会话，从 `/uc/listBindingByAccount` 获取可控绑定，并按设备 ID
+5. 对 App 可见设备调用 `devCustInfo/devInfo` 补全名称和产品类型属性。
+6. 创建 IoT 会话，从 `/uc/listBindingByAccount` 获取可控绑定，并按设备 ID
    与 App 首页列表取交集。
-6. 使用 `/thing/tsl/get` 读取设备物模型。
-7. 按 App 首页返回的 `iotPaasType` 自动分流：飞燕设备走 Link Living
+7. 使用 `/thing/tsl/get` 读取设备物模型。
+8. 按 App 首页返回的 `iotPaasType` 自动分流：飞燕设备走 Link Living
    `/thing/properties/get` 与 `/thing/properties/set`；FOG 设备走 IAM
    `devOperate/findDevAllProperties` 与 `devOperate/operCmd`。
 
