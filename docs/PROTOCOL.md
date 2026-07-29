@@ -151,16 +151,14 @@ The Android App treats the KX product type `5` screen as context-sensitive:
 
 - sleep mode forces the screen state off; requesting the screen also leaves
   sleep mode;
-- smart trusteeship blocks the ordinary screen control until trusteeship is
-  disabled;
-- `ScreenSwitch` is the requested setting, but the M8 Pro can reset it shortly
-  after acknowledging a command. HA therefore renders the actual lit state
-  from `T_Panel_Status` whenever that telemetry is available. A powered-off or
-  sleep-mode device is always rendered as screen off.
+- smart trusteeship displays `T_Panel_Status` and blocks the ordinary screen
+  control until trusteeship is disabled;
+- outside sleep mode and smart trusteeship, the App displays `ScreenSwitch`.
+  `T_Panel_Status` can disagree in that context and must not override it;
+- a powered-off device is always rendered as screen off.
 
-The Home Assistant switch mirrors those rules instead of presenting a
-successful `ScreenSwitch` write as a lit panel when the panel telemetry or
-another mode says otherwise.
+The Home Assistant switch mirrors those rules so its state and next available
+control action match the App.
 
 ### Filter lifetime percentage
 

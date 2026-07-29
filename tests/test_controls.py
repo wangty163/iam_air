@@ -230,8 +230,8 @@ async def test_kx_type_5_screen_uses_panel_state_and_blocks_trusteeship() -> Non
     coordinator.async_set_properties.assert_not_awaited()
 
 
-def test_kx_type_5_screen_prefers_actual_panel_telemetry() -> None:
-    """A transient screen setting cannot override the actual lit-panel state."""
+async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
+    """The App state remains actionable when panel telemetry disagrees."""
     device, coordinator = make_device_and_coordinator()
     screen = IamAirSwitch(
         coordinator,
@@ -248,10 +248,20 @@ def test_kx_type_5_screen_prefers_actual_panel_telemetry() -> None:
         }
     )
 
-    assert screen.is_on
-
-    coordinator.data[device.iot_id].properties["PowerSwitch"] = 0
     assert not screen.is_on
+    await screen.async_turn_on()
+    coordinator.async_set_properties.assert_awaited_once_with(
+        "fake-device-id",
+        {"ScreenSwitch": 1},
+    )
+
+    coordinator.data[device.iot_id].properties.update(
+        {
+            "ScreenSwitch": 1,
+            "T_Panel_Status": 0,
+        }
+    )
+    assert screen.is_on
 
 
 async def test_timer_number_and_filter_reset_button() -> None:
