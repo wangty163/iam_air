@@ -12,9 +12,9 @@ from custom_components.iam_air.coordinator import (
 from custom_components.iam_air.models import DeviceSnapshot
 
 
-def test_external_app_changes_poll_within_ten_seconds() -> None:
-    """External App commands should not leave HA stale for a full 30 seconds."""
-    assert DEFAULT_SCAN_INTERVAL_SECONDS == 10
+def test_external_app_changes_poll_within_five_seconds() -> None:
+    """External App commands should reach HA within five seconds."""
+    assert DEFAULT_SCAN_INTERVAL_SECONDS == 5
 
 
 def test_pending_write_masks_stale_cloud_read() -> None:

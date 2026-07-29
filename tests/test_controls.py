@@ -203,7 +203,7 @@ async def test_kx_type_5_screen_turn_on_leaves_sleep_mode_first() -> None:
         {"ScreenSwitch": 0},
     )
     assert coordinator.async_set_properties.await_args_list[0].kwargs == {
-        "optimistic_items": {"ScreenSwitch": 1}
+        "optimistic_items": {"ScreenSwitch": 1, "T_Panel_Status": 1}
     }
     assert coordinator.async_set_properties.await_args_list[1].args == (
         "fake-device-id",
@@ -239,8 +239,8 @@ async def test_kx_type_5_screen_uses_panel_state_during_trusteeship() -> None:
     )
 
 
-async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
-    """The App state remains actionable when panel telemetry disagrees."""
+async def test_kx_type_5_screen_uses_physical_panel_feedback() -> None:
+    """Physical panel feedback wins when the REST command value is stale."""
     device, coordinator = make_device_and_coordinator()
     screen = IamAirSwitch(
         coordinator,
@@ -257,12 +257,12 @@ async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
         }
     )
 
-    assert not screen.is_on
-    await screen.async_turn_on()
+    assert screen.is_on
+    await screen.async_turn_off()
     coordinator.async_set_properties.assert_awaited_once_with(
         "fake-device-id",
-        {"ScreenSwitch": 0},
-        optimistic_items={"ScreenSwitch": 1},
+        {"ScreenSwitch": 1},
+        optimistic_items={"ScreenSwitch": 0, "T_Panel_Status": 0},
     )
 
     coordinator.data[device.iot_id].properties.update(
@@ -271,7 +271,7 @@ async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
             "T_Panel_Status": 0,
         }
     )
-    assert screen.is_on
+    assert not screen.is_on
 
 
 async def test_app_blocks_main_controls_during_trusteeship() -> None:

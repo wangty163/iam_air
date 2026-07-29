@@ -157,18 +157,22 @@ The Android App treats the KX product type `5` screen as context-sensitive:
 
 - sleep mode renders the screen off; requesting the screen sends the current
   value as a toggle command and then leaves sleep mode;
-- smart trusteeship displays `T_Panel_Status`; its visible panel value is used
-  as the same toggle command;
-- outside sleep mode and smart trusteeship, the App displays `ScreenSwitch`.
-  `T_Panel_Status` can disagree in that context and must not override it;
+- `ScreenSwitch` is the same-value toggle command used by the M8 Pro control,
+  while `T_Panel_Status` is the physical panel feedback;
+- the App's MQTT cache normally keeps both values current, but the REST
+  `thing/properties/get` snapshot can leave `ScreenSwitch` at an older command
+  value even while `T_Panel_Status` reports the live panel state;
+- Home Assistant therefore renders the physical state from `T_Panel_Status`
+  whenever it is available and only falls back to `ScreenSwitch`;
 - a powered-off device is always rendered as screen off.
 
 Unlike an ordinary boolean setter, the type-5 App sends the currently displayed
 value of `ScreenSwitch` when the user requests the opposite state. The device
 interprets that same-value write as a toggle command. Home Assistant mirrors
 that command behavior while optimistically displaying the requested target
-until cloud telemetry catches up. Its `app_action` attribute exposes the App's
-`亮屏`/`息屏` button text; this is the next action, not the current state.
+from `T_Panel_Status` until cloud telemetry catches up. Its `app_action`
+attribute exposes the App's `亮屏`/`息屏` button text; this is the next action,
+not the current state.
 
 The App also rejects direct power, speed, work-mode, child-lock, ion,
 disinfection and timer actions while `Trusteeship=1`. The integration applies

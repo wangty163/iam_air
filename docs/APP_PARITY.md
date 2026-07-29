@@ -23,7 +23,7 @@
 | 睡眠 | `WorkMode=2` | `模式=睡眠` | 再次退出睡眠对应手动模式 |
 | 负离子 | `IonsSwitch` | `负离子` switch | 智能托管开启或设备关机时拒绝直接操作 |
 | 消毒 | `DisinfectSwitch` | `消毒` switch | 智能托管开启或设备关机时拒绝直接操作 |
-| 亮屏/息屏 | `ScreenSwitch`，托管时参考 `T_Panel_Status` | `屏幕显示` switch | App 文字表示下一操作；M8 Pro 写当前值作为切换命令 |
+| 亮屏/息屏 | `T_Panel_Status`（物理反馈），`ScreenSwitch`（切换命令） | `屏幕显示` switch | App 文字表示下一操作；REST 中命令值可能陈旧 |
 | HEPA | `FilterRunTime_1`、`FilterStatus_1` | `HEPA滤芯寿命`、累计时间、状态、重置按钮 | 百分比按 App 机型最大时长计算 |
 | 炭魔方 | `FilterRunTime_2`、`FilterStatus_2` | `炭魔方滤芯寿命`、累计时间、状态、重置按钮 | 百分比按 App 机型最大时长计算 |
 | 智能托管 | `Trusteeship` | `智能托管` switch | 童锁开启时拒绝切换；设备关机时不能开启 |
@@ -52,3 +52,15 @@
 
 HA 可用自己的自动化实现时间段和周期调度。集成保留简单稳定的
 AppKey/AppSecret 设备属性通道，不依赖商城、WebView 或账号侧场景接口。
+
+## 刷新机制
+
+App 的净化器详情页在属性 Provider 创建时调用一次
+`thingPropertiesGet`，随后监听 `/thing/properties` MQTT 通知，并按每个
+属性携带的时间戳合并新值；该页面没有固定间隔的循环轮询。App 回到前台
+时会恢复 MQTT 连接，并通过页面生命周期刷新账号侧页面数据。
+
+Home Assistant 保持 AppKey/AppSecret-only 的实现，不依赖 Android 私有
+MQTT SDK。集成每 5 秒读取一次同一设备属性接口，因此 App 或机器侧操作
+通常在 5 秒内反映到 HA；HA 自己发出的控制仍会立即显示目标状态并立刻
+请求一次云端回读。

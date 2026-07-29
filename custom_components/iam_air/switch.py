@@ -75,11 +75,9 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
             work_mode = self.property_value("WorkMode")
             if work_mode in (2, "2"):
                 return False
-            trusteeship = self.property_value("Trusteeship")
-            if value_as_bool(trusteeship):
-                panel_status = self.property_value("T_Panel_Status")
-                if panel_status is not None:
-                    return value_as_bool(panel_status)
+            panel_status = self.property_value("T_Panel_Status")
+            if panel_status is not None:
+                return value_as_bool(panel_status)
         value = self.property_value(self._property.identifier)
         if value is None:
             return None
@@ -126,10 +124,9 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
         current_command = 1 if current_state else 0
         desired_value = self._property.coerce_value(1 if turn_on else 0)
         optimistic_items: dict[str, object] = {
-            self._property.identifier: desired_value
+            self._property.identifier: desired_value,
+            "T_Panel_Status": 1 if turn_on else 0,
         }
-        if value_as_bool(self.property_value("Trusteeship")):
-            optimistic_items["T_Panel_Status"] = 1 if turn_on else 0
         await self.coordinator.async_set_properties(
             self.device.iot_id,
             {
