@@ -5,6 +5,9 @@ from custom_components.iam_air.models import (
     parse_device,
     parse_tsl,
     percentage_for_property,
+    select_app_device_metadata,
+    select_app_filter_names,
+    select_filter_max_runtimes,
     value_as_bool,
     value_for_percentage,
 )
@@ -60,6 +63,104 @@ def test_parse_tsl_and_detect_air_purifier() -> None:
     assert device.looks_like_air_purifier
     assert device.find_property("POWERSTATE").identifier == "powerstate"
     assert device.find_property("PM25").unit == "µg/m³"
+
+
+def test_app_display_name_overrides_cloud_device_identifier() -> None:
+    """The name rendered by the App wins over a machine-generated device name."""
+    device = parse_device(
+        {
+            "iotId": "fake-device-id",
+            "deviceName": "machinegenerated12345",
+            "productName": "M8",
+            "status": 1,
+        },
+        TSL,
+        display_name="Living room purifier",
+    )
+
+    assert device.name == "Living room purifier"
+
+
+def test_app_detail_uses_product_type_when_device_has_no_custom_name() -> None:
+    """The precise App product type replaces a generic default product name."""
+    display_name, model_name = select_app_device_metadata(
+        {"productName": "Homepage default"},
+        {
+            "productName": "Default purifier",
+            "defaultProductName": "Default purifier",
+            "productTypeName": "IAM M8 purifier",
+        },
+    )
+
+    assert display_name == "IAM M8 purifier"
+    assert model_name == "IAM M8 purifier"
+
+
+def test_app_detail_preserves_user_custom_device_name() -> None:
+    """A device note set by the user remains the primary display name."""
+    display_name, model_name = select_app_device_metadata(
+        {"productName": "Homepage name"},
+        {
+            "productName": "Living room purifier",
+            "defaultProductName": "Default purifier",
+            "productTypeName": "IAM M8 purifier",
+        },
+    )
+
+    assert display_name == "Living room purifier"
+    assert model_name == "IAM M8 purifier"
+
+
+def test_filter_max_runtimes_match_app_category_and_type() -> None:
+    """Filter lifetime limits come from the exact App model configuration."""
+    result = select_filter_max_runtimes(
+        {"productCategory": "KX", "productType": "5"},
+        [
+            {
+                "productCategory": "KX",
+                "productType": "4",
+                "filterMaxRuntime": 1000,
+                "filter2MaxRuntime": 2000,
+            },
+            {
+                "productCategory": "KX",
+                "productType": "5",
+                "filterMaxRuntime": 3000,
+                "filter2MaxRuntime": 9000,
+            },
+        ],
+    )
+
+    assert result == (3000, 9000)
+
+
+def test_filter_max_runtimes_reject_missing_or_nonpositive_values() -> None:
+    """Invalid model limits cannot create misleading percentage sensors."""
+    result = select_filter_max_runtimes(
+        {"productCategory": "KX", "productType": 5},
+        [
+            {
+                "productCategory": "KX",
+                "productType": "5",
+                "filterMaxRuntime": 0,
+                "filter2MaxRuntime": "invalid",
+            }
+        ],
+    )
+
+    assert result == (None, None)
+
+
+def test_app_filter_names_match_xdj_dual_filter_titles() -> None:
+    """KX dual-filter devices use the two static titles rendered by the App."""
+    assert select_app_filter_names(
+        {"productCategory": "KX", "productType": "5"},
+        (3000, 9000),
+    ) == ("HEPA", "炭魔方")
+    assert select_app_filter_names(
+        {"productCategory": "KX", "productType": "2"},
+        (3000, None),
+    ) == ("滤网", None)
 
 
 def test_enum_and_numeric_specs() -> None:

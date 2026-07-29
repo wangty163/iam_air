@@ -18,8 +18,10 @@ from .const import (
 class IamAccountSession:
     """Authenticated IAM account details."""
 
-    user_id: str
-    username: str
+    user_id: str = field(repr=False)
+    username: str = field(repr=False)
+    iam_token: str = field(repr=False)
+    im_sign: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +33,25 @@ class IotSession:
     identity_id: str = field(repr=False)
     expires_in: int
     created_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class MobileMqttCredentials:
+    """Temporary mobile-channel MQTT identity."""
+
+    product_key: str = field(repr=False)
+    device_name: str = field(repr=False)
+    device_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FogMqttCredentials:
+    """Temporary FOG MQTT identity returned by the IAM account service."""
+
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+    client_id: str = field(repr=False)
+    topic: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +143,12 @@ class IamAirDevice:
     product_key: str
     device_name: str
     online: bool
+    product_category: str = ""
+    product_type: str = ""
+    filter_max_runtimes: tuple[int | None, int | None] = (None, None)
+    filter_names: tuple[str | None, str | None] = (None, None)
     properties: dict[str, TslProperty] = field(default_factory=dict)
+    iot_paas_type: int | None = None
 
     def find_property(self, *aliases: str) -> TslProperty | None:
         """Find a TSL property without depending on identifier case."""
@@ -144,6 +170,11 @@ class IamAirDevice:
             "PM25", "pm25", "HCHO", "hcho", "tvoc", "airQualityGrade"
         )
         return has_power and (has_speed or has_mode or has_air_sensor is not None)
+
+    @property
+    def uses_kx_type_5_screen_behavior(self) -> bool:
+        """Return whether the App applies its special KX type-5 screen rules."""
+        return self.product_category == "KX" and self.product_type == "5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +199,7 @@ def percentage_for_property(prop: TslProperty, value: Any) -> int | None:
         count = max(1, round((maximum - minimum) / step) + 1)
         try:
             index = round((float(value) - minimum) / step)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
         index = min(count - 1, max(0, index))
         return round((index + 1) * 100 / count)
@@ -243,18 +274,115 @@ def parse_tsl(data: Any) -> dict[str, TslProperty]:
     return parsed
 
 
-def parse_device(raw: dict[str, Any], tsl: Any) -> IamAirDevice:
+def parse_device(
+    raw: dict[str, Any],
+    tsl: Any,
+    *,
+    display_name: str | None = None,
+    model_name: str | None = None,
+    product_category: str | None = None,
+    product_type: str | None = None,
+    filter_max_runtimes: tuple[int | None, int | None] = (None, None),
+    filter_names: tuple[str | None, str | None] = (None, None),
+    iot_paas_type: int | None = None,
+) -> IamAirDevice:
     """Create a device model from binding-list data and its TSL."""
     iot_id = str(raw.get("iotId") or "")
     name = str(
-        raw.get("nickName") or raw.get("devName") or raw.get("deviceName") or "IAM Air"
+        display_name
+        or raw.get("nickName")
+        or raw.get("devName")
+        or raw.get("productName")
+        or raw.get("categoryName")
+        or raw.get("deviceName")
+        or "IAM Air"
     )
     return IamAirDevice(
         iot_id=iot_id,
         name=name,
-        model=str(raw.get("productName") or raw.get("categoryName") or "IAM Air"),
+        model=str(
+            model_name
+            or raw.get("productName")
+            or raw.get("categoryName")
+            or "IAM Air"
+        ),
         product_key=str(raw.get("productKey") or ""),
         device_name=str(raw.get("deviceName") or ""),
         online=raw.get("status") in (1, "1", True, "online", "ONLINE"),
+        product_category=str(product_category or ""),
+        product_type=str(product_type or ""),
+        filter_max_runtimes=filter_max_runtimes,
+        filter_names=filter_names,
         properties=parse_tsl(tsl),
+        iot_paas_type=iot_paas_type,
     )
+
+
+def select_app_device_metadata(
+    homepage: dict[str, Any],
+    detail: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Select App-aligned display and model names from device metadata."""
+
+    def clean(value: Any) -> str:
+        return str(value or "").strip()
+
+    detail_name = clean(detail.get("productName"))
+    default_name = clean(detail.get("defaultProductName"))
+    product_type_name = clean(detail.get("productTypeName"))
+    homepage_name = clean(homepage.get("productName"))
+
+    display_name = (
+        detail_name
+        if detail_name and detail_name != default_name
+        else product_type_name or detail_name or default_name or homepage_name
+    )
+    model_name = (
+        product_type_name or default_name or detail_name or homepage_name
+    )
+    return display_name or None, model_name or None
+
+
+def select_filter_max_runtimes(
+    detail: dict[str, Any],
+    product_configs: list[dict[str, Any]],
+) -> tuple[int | None, int | None]:
+    """Return the two App-configured filter lifetimes for a device model."""
+    category = str(detail.get("productCategory") or "")
+    product_type = str(detail.get("productType") or "")
+    matching = next(
+        (
+            item
+            for item in product_configs
+            if str(item.get("productCategory") or "") == category
+            and str(item.get("productType") or "") == product_type
+        ),
+        {},
+    )
+
+    def positive_int(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except TypeError, ValueError:
+            return None
+        return parsed if parsed > 0 else None
+
+    return (
+        positive_int(matching.get("filterMaxRuntime")),
+        positive_int(matching.get("filter2MaxRuntime")),
+    )
+
+
+def select_app_filter_names(
+    detail: dict[str, Any],
+    maximum_runtimes: tuple[int | None, int | None],
+) -> tuple[str | None, str | None]:
+    """Return the filter titles rendered by the App's XDJ detail page."""
+    if str(detail.get("productCategory") or "") != "KX":
+        return (None, None)
+    first_maximum, second_maximum = maximum_runtimes
+    if second_maximum is not None:
+        return ("HEPA", "炭魔方")
+    if first_maximum is not None:
+        return ("滤网", None)
+    return (None, None)

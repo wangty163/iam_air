@@ -12,16 +12,21 @@ SELF = Path(__file__).resolve()
 
 FORBIDDEN_FILENAMES = {
     ".env",
-    "secrets.yaml",
     "auth",
+    "credentials.json",
+    "secrets.yaml",
 }
 FORBIDDEN_SUFFIXES = {
+    ".aab",
     ".apk",
+    ".apks",
     ".db",
+    ".dex",
     ".har",
     ".pcap",
     ".pcapng",
     ".trace",
+    ".xapk",
 }
 TEXT_SUFFIXES = {
     ".json",

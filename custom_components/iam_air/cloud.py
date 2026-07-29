@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -27,8 +28,22 @@ from .const import (
     HTTP_TIMEOUT_SECONDS,
     IAM_API_BASE_URL,
     IAM_APP_VERSION,
+    IAM_DEVICE_DETAIL_PATH,
+    IAM_DEVICE_DETAIL_VERSION,
+    IAM_FOG_CONTROL_PATH,
+    IAM_FOG_MQTT_AUTH_PATH,
+    IAM_FOG_PROPERTIES_PATH,
+    IAM_FOG_PROPERTIES_VERSION,
+    IAM_HOMEPAGE_PATH,
+    IAM_HOMEPAGE_PROTOCOL_VERSION,
+    IAM_PRODUCT_CONFIG_PATH,
+    IAM_PRODUCT_CONFIG_VERSION,
     IAM_PROTOCOL_VERSION,
+    IAM_SESSION_REPLACED_STATUS,
     IOT_API_BASE_URL,
+    IOT_PAAS_TYPE_FOG,
+    MOBILE_AUTH_API_VERSION,
+    MOBILE_AUTH_PATH,
     OA_LOGIN_API_PATH,
     OA_REGION_API_PATH,
     PATH_CREATE_SESSION,
@@ -37,8 +52,19 @@ from .const import (
     PATH_PROPERTIES_SET,
     PATH_REFRESH_SESSION,
     PATH_TSL_GET,
+    SESSION_ERROR_CODES,
 )
-from .models import IamAccountSession, IamAirDevice, IotSession, parse_device
+from .models import (
+    FogMqttCredentials,
+    IamAccountSession,
+    IamAirDevice,
+    IotSession,
+    MobileMqttCredentials,
+    parse_device,
+    select_app_device_metadata,
+    select_app_filter_names,
+    select_filter_max_runtimes,
+)
 
 ACCEPT_JSON = "application/json; charset=UTF-8"
 CONTENT_TYPE_JSON = "application/json; charset=UTF-8"
@@ -80,14 +106,18 @@ class IamCloudClient:
         password: str,
         app_key: str,
         app_secret: str,
+        instance_id: str | None = None,
     ) -> None:
         self._http = http
         self._username = username.strip()
         self._password = password
         self._app_key = app_key.strip()
         self._app_secret = app_secret.strip()
+        self._instance_id = (instance_id or self._username.casefold()).strip()
         self._account_session: IamAccountSession | None = None
         self._iot_session: IotSession | None = None
+        self._iam_session_refresh_lock = asyncio.Lock()
+        self._session_refresh_lock = asyncio.Lock()
 
     @property
     def account_session(self) -> IamAccountSession | None:
@@ -109,52 +139,186 @@ class IamCloudClient:
 
     async def async_list_devices(self) -> list[dict[str, Any]]:
         """Return all devices bound to the current account."""
-        await self._async_ensure_iot_session()
-        result = await self._async_gateway_call(
+        result = await self._async_session_gateway_call(
             PATH_DEVICE_LIST,
             {"pageNo": 1, "pageSize": 100},
             api_version=API_VERSION_DEVICE_LIST,
-            iot_token=self._required_iot_token(),
         )
         data = result.get("data") or {}
         devices = data.get("data") if isinstance(data, dict) else data
         return [item for item in devices or [] if isinstance(item, dict)]
 
+    async def async_list_app_devices(self) -> list[dict[str, Any]]:
+        """Return the devices selected by the IAM app's homepage service."""
+        account = self._account_session
+        if account is None:
+            raise IamAirAuthError("IAM account session is not initialized")
+        response = await self._async_iam_session_post_json(
+            IAM_HOMEPAGE_PATH,
+            data={
+                "userId": account.user_id,
+                "version": IAM_HOMEPAGE_PROTOCOL_VERSION,
+            },
+        )
+        return parse_iam_homepage_response(response)
+
+    async def async_get_app_device_detail(self, iot_id: str) -> dict[str, Any]:
+        """Return the App's authoritative display metadata for a device."""
+        account = self._account_session
+        if account is None:
+            raise IamAirAuthError("IAM account session is not initialized")
+        response = await self._async_iam_session_post_json(
+            IAM_DEVICE_DETAIL_PATH,
+            data={
+                "iotId": iot_id,
+                "userId": account.user_id,
+                "version": IAM_DEVICE_DETAIL_VERSION,
+            },
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM device detail query failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise IamAirApiError("IAM device detail response is invalid")
+        return result
+
+    async def async_list_app_product_configs(self) -> list[dict[str, Any]]:
+        """Return App model configuration used for filter lifetime limits."""
+        response = await self._async_iam_session_post_json(
+            IAM_PRODUCT_CONFIG_PATH,
+            data={"version": IAM_PRODUCT_CONFIG_VERSION},
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM product config query failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, list):
+            raise IamAirApiError("IAM product config response is invalid")
+        return [item for item in result if isinstance(item, dict)]
+
     async def async_get_tsl(self, iot_id: str) -> Any:
         """Fetch a device TSL."""
-        await self._async_ensure_iot_session()
-        result = await self._async_gateway_call(
+        result = await self._async_session_gateway_call(
             PATH_TSL_GET,
             {"iotId": iot_id},
             api_version=API_VERSION_TSL_GET,
-            iot_token=self._required_iot_token(),
         )
         return result.get("data") or {}
 
+    async def async_get_mobile_mqtt_credentials(self) -> MobileMqttCredentials:
+        """Create or recover the App-compatible mobile MQTT identity."""
+        identity = f"{self._app_key}\0{self._instance_id}".encode()
+        device_sn = hashlib.sha256(b"iam-air-device\0" + identity).hexdigest()[:32]
+        client_id = hashlib.sha256(b"iam-air-client\0" + identity).hexdigest()[:8]
+        timestamp = str(int(time.time() * 1000))
+        auth_info = build_mobile_auth_info(
+            app_key=self._app_key,
+            app_secret=self._app_secret,
+            client_id=client_id,
+            device_sn=device_sn,
+            timestamp=timestamp,
+        )
+        response = await self._async_gateway_call(
+            MOBILE_AUTH_PATH,
+            {"authInfo": auth_info},
+            api_version=MOBILE_AUTH_API_VERSION,
+            iot_token=None,
+        )
+        return parse_mobile_mqtt_credentials(response)
+
+    async def async_get_fog_mqtt_credentials(self) -> FogMqttCredentials:
+        """Return the App's account-scoped FOG MQTT identity."""
+        response = await self._async_iam_session_post_json(
+            IAM_FOG_MQTT_AUTH_PATH
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM FOG MQTT authorization failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise IamAirApiError("IAM FOG MQTT response is invalid")
+        values = tuple(
+            str(result.get(field) or "")
+            for field in ("username", "password", "clientId", "topic")
+        )
+        if not all(values):
+            raise IamAirApiError("IAM FOG MQTT response is incomplete")
+        return FogMqttCredentials(
+            username=values[0],
+            password=values[1],
+            client_id=values[2],
+            topic=values[3],
+        )
+
     async def async_discover_air_devices(self) -> list[IamAirDevice]:
-        """Discover bound devices whose TSL looks like an air purifier."""
+        """Discover app-visible devices whose TSL looks like an air purifier."""
+        app_devices = {
+            str(item["iotId"]): item
+            for item in await self.async_list_app_devices()
+            if item.get("iotId")
+        }
+        try:
+            product_configs = await self.async_list_app_product_configs()
+        except (IamAirApiError, IamAirConnectionError):
+            product_configs = []
         discovered: list[IamAirDevice] = []
         for raw_device in await self.async_list_devices():
             iot_id = str(raw_device.get("iotId") or "")
-            if not iot_id:
+            if not iot_id or iot_id not in app_devices:
                 continue
+            app_device = app_devices[iot_id]
+            try:
+                detail = await self.async_get_app_device_detail(iot_id)
+            except (IamAirApiError, IamAirConnectionError):
+                detail = {}
             try:
                 tsl = await self.async_get_tsl(iot_id)
             except IamAirApiError:
                 continue
-            device = parse_device(raw_device, tsl)
+            display_name, model_name = select_app_device_metadata(
+                app_device,
+                detail,
+            )
+            product_category = str(detail.get("productCategory") or "")
+            product_type = str(detail.get("productType") or "")
+            filter_max_runtimes = select_filter_max_runtimes(
+                detail,
+                product_configs,
+            )
+            device = parse_device(
+                raw_device,
+                tsl,
+                display_name=display_name,
+                model_name=model_name,
+                product_category=product_category,
+                product_type=product_type,
+                filter_max_runtimes=filter_max_runtimes,
+                filter_names=select_app_filter_names(
+                    detail,
+                    filter_max_runtimes,
+                ),
+                iot_paas_type=parse_iot_paas_type(
+                    app_device.get("iotPaasType")
+                ),
+            )
             if device.looks_like_air_purifier:
                 discovered.append(device)
         return discovered
 
-    async def async_get_properties(self, iot_id: str) -> dict[str, Any]:
+    async def async_get_properties(
+        self,
+        iot_id: str,
+        *,
+        iot_paas_type: int | None = None,
+    ) -> dict[str, Any]:
         """Return a device's property snapshot."""
-        await self._async_ensure_iot_session()
-        result = await self._async_gateway_call(
+        if iot_paas_type == IOT_PAAS_TYPE_FOG:
+            return await self._async_get_fog_properties(iot_id)
+        result = await self._async_session_gateway_call(
             PATH_PROPERTIES_GET,
             {"iotId": iot_id},
             api_version=API_VERSION_PROPERTIES_GET,
-            iot_token=self._required_iot_token(),
         )
         data = result.get("data")
         if not isinstance(data, dict):
@@ -165,14 +329,127 @@ class IamCloudClient:
             if isinstance(item, dict) and "value" in item
         }
 
-    async def async_set_properties(self, iot_id: str, items: dict[str, Any]) -> None:
+    async def _async_get_fog_properties(self, iot_id: str) -> dict[str, Any]:
+        """Read properties through the IAM App's FOG device route."""
+        response = await self._async_iam_session_post_json(
+            IAM_FOG_PROPERTIES_PATH,
+            data={
+                "deviceId": iot_id,
+                "version": IAM_FOG_PROPERTIES_VERSION,
+            },
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM FOG property query failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise IamAirApiError("IAM FOG property response is invalid")
+        return result
+
+    async def async_set_properties(
+        self,
+        iot_id: str,
+        items: dict[str, Any],
+        *,
+        iot_paas_type: int | None = None,
+    ) -> None:
         """Set one or more writable device properties."""
-        await self._async_ensure_iot_session()
-        await self._async_gateway_call(
+        if iot_paas_type == IOT_PAAS_TYPE_FOG:
+            await self._async_set_fog_properties(iot_id, items)
+            return
+        await self._async_session_gateway_call(
             PATH_PROPERTIES_SET,
             {"iotId": iot_id, "items": items},
             api_version=API_VERSION_PROPERTIES_SET,
-            iot_token=self._required_iot_token(),
+        )
+
+    async def _async_set_fog_properties(
+        self,
+        iot_id: str,
+        items: dict[str, Any],
+    ) -> None:
+        """Set properties through the IAM App's FOG device route."""
+        body = json.dumps(
+            {"deviceId": iot_id, "operCmd": items},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        response = await self._async_iam_session_post_json(
+            IAM_FOG_CONTROL_PATH,
+            body=body,
+            content_type=CONTENT_TYPE_JSON,
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM FOG control failed"
+            raise IamAirApiError(str(message))
+
+    @staticmethod
+    def _iam_api_headers(account: IamAccountSession) -> dict[str, str]:
+        """Return the IAM App headers without exposing them to logs."""
+        return {
+            "token": account.iam_token,
+            "userName": account.username,
+            "signStr": account.im_sign,
+            "appVersion": IAM_APP_VERSION,
+            "phTypeName": "Home Assistant",
+            "phOSVersion": "Home Assistant",
+            "osType": "2",
+        }
+
+    async def _async_iam_session_post_json(
+        self,
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        body: bytes | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Call an IAM session API and recover once after status 1040."""
+        account = self._account_session
+        if account is None:
+            raise IamAirAuthError("IAM account session is not initialized")
+        response = await self._async_iam_api_post_json(
+            path,
+            account=account,
+            data=data,
+            body=body,
+            content_type=content_type,
+        )
+        if str(response.get("status")) != str(IAM_SESSION_REPLACED_STATUS):
+            return response
+
+        async with self._iam_session_refresh_lock:
+            if self._account_session is account:
+                self._account_session = await self._async_iam_login()
+        refreshed = self._account_session
+        if refreshed is None:
+            raise IamAirAuthError("IAM account session refresh failed")
+        return await self._async_iam_api_post_json(
+            path,
+            account=refreshed,
+            data=data,
+            body=body,
+            content_type=content_type,
+        )
+
+    async def _async_iam_api_post_json(
+        self,
+        path: str,
+        *,
+        account: IamAccountSession,
+        data: dict[str, str] | None,
+        body: bytes | None,
+        content_type: str | None,
+    ) -> dict[str, Any]:
+        """Send one IAM API request using an explicit account session."""
+        headers = self._iam_api_headers(account)
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        return await self._async_post_json(
+            urljoin(IAM_API_BASE_URL, path),
+            data=data,
+            body=body,
+            headers=headers,
         )
 
     async def _async_iam_login(self) -> IamAccountSession:
@@ -276,11 +553,44 @@ class IamCloudClient:
 
     async def _async_ensure_iot_session(self) -> None:
         session = self._iot_session
-        if session is None:
-            await self.async_login()
+        if session is not None and (
+            time.monotonic() < session.created_at + session.expires_in - 60
+        ):
             return
-        if time.monotonic() >= session.created_at + session.expires_in - 60:
-            await self._async_refresh_iot_session()
+        async with self._session_refresh_lock:
+            current = self._iot_session
+            if current is None:
+                await self.async_login()
+            elif time.monotonic() >= current.created_at + current.expires_in - 60:
+                await self._async_refresh_iot_session()
+
+    async def _async_session_gateway_call(
+        self,
+        path: str,
+        params: dict[str, Any],
+        *,
+        api_version: str,
+    ) -> dict[str, Any]:
+        """Call a session API and recover once when another login invalidates it."""
+        await self._async_ensure_iot_session()
+        session = self._iot_session
+        try:
+            return await self._async_gateway_call(
+                path,
+                params,
+                api_version=api_version,
+                iot_token=self._required_iot_token(),
+            )
+        except IamAirAuthError:
+            async with self._session_refresh_lock:
+                if self._iot_session is session:
+                    await self._async_refresh_iot_session()
+            return await self._async_gateway_call(
+                path,
+                params,
+                api_version=api_version,
+                iot_token=self._required_iot_token(),
+            )
 
     def _required_iot_token(self) -> str:
         if self._iot_session is None:
@@ -312,7 +622,9 @@ class IamCloudClient:
         code = response.get("code")
         if code != 200:
             message = response.get("localizedMsg") or response.get("message") or "error"
-            error_type = IamAirAuthError if code in (401, 403, 460) else IamAirApiError
+            error_type = (
+                IamAirAuthError if code in SESSION_ERROR_CODES else IamAirApiError
+            )
             raise error_type(f"Link Living API error {code}: {message}")
         return response
 
@@ -388,15 +700,37 @@ def parse_iam_login_response(
     response: dict[str, Any], fallback_username: str
 ) -> IamAccountSession:
     """Parse an IAM login response without retaining or exposing the password."""
-    if response.get("status") != 1000:
+    if response.get("status") not in (1000, "1000"):
         raise IamAirAuthError(str(response.get("message") or "IAM login failed"))
     result = response.get("result")
-    if not isinstance(result, dict) or not result.get("userId"):
-        raise IamAirAuthError("IAM login response did not contain a user ID")
+    if not isinstance(result, dict) or not all(
+        result.get(field) for field in ("userId", "token")
+    ):
+        raise IamAirAuthError("IAM login response did not contain session details")
     return IamAccountSession(
         user_id=str(result["userId"]),
         username=str(result.get("userName") or fallback_username),
+        iam_token=str(result["token"]),
+        im_sign=str(result.get("imSign") or ""),
     )
+
+
+def parse_iam_homepage_response(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse the IAM app homepage device list."""
+    if response.get("status") not in (1000, "1000"):
+        raise IamAirApiError(str(response.get("message") or "IAM homepage failed"))
+    result = response.get("result")
+    if not isinstance(result, list):
+        raise IamAirApiError("IAM homepage response did not contain a device list")
+    return [item for item in result if isinstance(item, dict)]
+
+
+def parse_iot_paas_type(value: Any) -> int | None:
+    """Parse the App's device control route marker."""
+    try:
+        return int(value)
+    except TypeError, ValueError:
+        return None
 
 
 def parse_iot_session_response(response: dict[str, Any]) -> IotSession:
@@ -414,6 +748,55 @@ def parse_iot_session_response(response: dict[str, Any]) -> IotSession:
         identity_id=str(data.get("identityId") or data.get("identity") or ""),
         expires_in=expires_in,
         created_at=time.monotonic(),
+    )
+
+
+def build_mobile_auth_info(
+    *,
+    app_key: str,
+    app_secret: str,
+    client_id: str,
+    device_sn: str,
+    timestamp: str,
+) -> dict[str, str]:
+    """Build the Link Living mobile-channel registration parameters."""
+    values = {
+        "appKey": app_key,
+        "clientId": client_id,
+        "deviceSn": device_sn,
+        "timestamp": timestamp,
+    }
+    sign_text = "".join(f"{key}{values[key]}" for key in sorted(values))
+    signature = hmac.new(
+        app_secret.encode(),
+        sign_text.encode(),
+        hashlib.sha1,
+    ).hexdigest()
+    return {
+        "clientId": client_id,
+        "deviceSn": device_sn,
+        "timestamp": timestamp,
+        "sign": signature,
+    }
+
+
+def parse_mobile_mqtt_credentials(
+    response: dict[str, Any],
+) -> MobileMqttCredentials:
+    """Parse the temporary mobile-channel identity without exposing it."""
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise IamAirApiError("Mobile channel response did not contain credentials")
+    values = tuple(
+        str(data.get(field) or "")
+        for field in ("productKey", "deviceName", "deviceSecret")
+    )
+    if not all(values):
+        raise IamAirApiError("Mobile channel response contained incomplete credentials")
+    return MobileMqttCredentials(
+        product_key=values[0],
+        device_name=values[1],
+        device_secret=values[2],
     )
 
 

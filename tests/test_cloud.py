@@ -1,21 +1,43 @@
 """Tests for cloud signing and safe response parsing."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
+import time
 
 import pytest
 
 from custom_components.iam_air.cloud import (
     ACCEPT_JSON,
     CONTENT_TYPE_JSON,
+    IamAirApiError,
     IamAirAuthError,
+    IamCloudClient,
     build_gateway_request,
+    build_mobile_auth_info,
+    parse_iam_homepage_response,
     parse_iam_login_response,
+    parse_iot_paas_type,
     parse_iot_session_response,
+    parse_mobile_mqtt_credentials,
     validate_oa_host,
 )
+from custom_components.iam_air.const import (
+    API_VERSION_PROPERTIES_SET,
+    IAM_DEVICE_DETAIL_PATH,
+    IAM_DEVICE_DETAIL_VERSION,
+    IAM_FOG_CONTROL_PATH,
+    IAM_FOG_MQTT_AUTH_PATH,
+    IAM_FOG_PROPERTIES_PATH,
+    IAM_FOG_PROPERTIES_VERSION,
+    IAM_PRODUCT_CONFIG_PATH,
+    IAM_PRODUCT_CONFIG_VERSION,
+    IOT_PAAS_TYPE_FOG,
+    PATH_PROPERTIES_SET,
+)
+from custom_components.iam_air.models import IamAccountSession, IotSession
 
 
 def test_gateway_signature_is_deterministic_and_secret_is_not_transmitted() -> None:
@@ -65,11 +87,62 @@ def test_gateway_signature_is_deterministic_and_secret_is_not_transmitted() -> N
     assert request.headers["X-Ca-Signature"] == expected
 
 
-def test_parse_iam_login_response_keeps_only_session_fields() -> None:
+def test_mobile_auth_signature_matches_app_sdk() -> None:
+    """Mobile registration signs the four sorted auth fields with AppSecret."""
+    auth_info = build_mobile_auth_info(
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+        client_id="client01",
+        device_sn="device01",
+        timestamp="1234567890000",
+    )
+    sign_text = (
+        "appKeyfake-app-key"
+        "clientIdclient01"
+        "deviceSndevice01"
+        "timestamp1234567890000"
+    )
+    expected = hmac.new(
+        b"fake-app-secret",
+        sign_text.encode(),
+        hashlib.sha1,
+    ).hexdigest()
+
+    assert auth_info == {
+        "clientId": "client01",
+        "deviceSn": "device01",
+        "timestamp": "1234567890000",
+        "sign": expected,
+    }
+    assert "fake-app-secret" not in json.dumps(auth_info)
+
+
+def test_parse_mobile_mqtt_credentials_requires_complete_triple() -> None:
+    credentials = parse_mobile_mqtt_credentials(
+        {
+            "data": {
+                "productKey": "fake-product",
+                "deviceName": "fake-device",
+                "deviceSecret": "fake-secret",
+            }
+        }
+    )
+
+    assert credentials.product_key == "fake-product"
+    assert credentials.device_name == "fake-device"
+    assert credentials.device_secret == "fake-secret"
+    with pytest.raises(IamAirApiError):
+        parse_mobile_mqtt_credentials({"data": {"productKey": "fake-product"}})
+
+
+@pytest.mark.parametrize("status", (1000, "1000"))
+def test_parse_iam_login_response_keeps_only_session_fields(
+    status: int | str,
+) -> None:
     """IAM login parsing neither needs nor returns a password."""
     session = parse_iam_login_response(
         {
-            "status": 1000,
+            "status": status,
             "result": {
                 "userId": "fake-user",
                 "userName": "fake-account",
@@ -81,7 +154,13 @@ def test_parse_iam_login_response_keeps_only_session_fields() -> None:
     )
 
     assert session.user_id == "fake-user"
+    assert session.iam_token == "fake-token"
+    assert session.im_sign == "fake-sign"
     assert "password" not in repr(session).lower()
+    assert "fake-user" not in repr(session)
+    assert "fake-account" not in repr(session)
+    assert "fake-token" not in repr(session)
+    assert "fake-sign" not in repr(session)
 
 
 def test_parse_iam_login_rejects_failure() -> None:
@@ -91,6 +170,546 @@ def test_parse_iam_login_rejects_failure() -> None:
             {"status": 1001, "message": "Authentication failed"},
             "fake-account",
         )
+
+
+def test_parse_iam_login_allows_missing_optional_im_sign() -> None:
+    """Accounts without an IM signature still have a valid IAM web session."""
+    session = parse_iam_login_response(
+        {
+            "status": 1000,
+            "result": {
+                "userId": "fake-user",
+                "userName": "fake-account",
+                "token": "fake-token",
+            },
+        },
+        "fallback-account",
+    )
+
+    assert session.im_sign == ""
+
+
+def test_parse_iam_homepage_devices() -> None:
+    """The app homepage parser keeps only device objects."""
+    devices = parse_iam_homepage_response(
+        {
+            "status": "1000",
+            "result": [
+                {"iotId": "fake-visible-device"},
+                "invalid",
+                None,
+            ],
+        }
+    )
+
+    assert devices == [{"iotId": "fake-visible-device"}]
+
+
+@pytest.mark.asyncio
+async def test_discovery_intersects_app_homepage_with_link_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale Link binding is not exposed when the IAM app omits its iotId."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    tsl = {
+        "properties": [
+            {
+                "identifier": "powerstate",
+                "accessMode": "rw",
+                "dataType": {"type": "bool"},
+            },
+            {
+                "identifier": "mode",
+                "accessMode": "rw",
+                "dataType": {"type": "enum", "specs": {"0": "Auto"}},
+            },
+        ]
+    }
+    tsl_requests: list[str] = []
+    detail_requests: list[str] = []
+
+    async def fake_app_devices() -> list[dict[str, object]]:
+        return [
+            {
+                "iotId": "fake-visible-device",
+                "iotPaasType": IOT_PAAS_TYPE_FOG,
+                "productName": "App-visible purifier",
+            }
+        ]
+
+    async def fake_link_devices() -> list[dict[str, object]]:
+        return [
+            {
+                "iotId": "fake-stale-device",
+                "productName": "Stale",
+            },
+            {
+                "iotId": "fake-visible-device",
+                "productName": "Visible",
+            },
+        ]
+
+    async def fake_get_tsl(iot_id: str) -> dict[str, object]:
+        tsl_requests.append(iot_id)
+        return tsl
+
+    async def fake_get_detail(iot_id: str) -> dict[str, object]:
+        detail_requests.append(iot_id)
+        return {
+            "productName": "Default purifier",
+            "defaultProductName": "Default purifier",
+            "productTypeName": "IAM M8 purifier",
+            "productCategory": "KX",
+            "productType": "5",
+        }
+
+    async def fake_product_configs() -> list[dict[str, object]]:
+        return [
+            {
+                "productCategory": "KX",
+                "productType": "5",
+                "filterMaxRuntime": 3000,
+                "filter2MaxRuntime": 9000,
+            }
+        ]
+
+    monkeypatch.setattr(client, "async_list_app_devices", fake_app_devices)
+    monkeypatch.setattr(client, "async_list_devices", fake_link_devices)
+    monkeypatch.setattr(client, "async_get_app_device_detail", fake_get_detail)
+    monkeypatch.setattr(
+        client,
+        "async_list_app_product_configs",
+        fake_product_configs,
+    )
+    monkeypatch.setattr(client, "async_get_tsl", fake_get_tsl)
+
+    devices = await client.async_discover_air_devices()
+
+    assert [device.iot_id for device in devices] == ["fake-visible-device"]
+    assert devices[0].name == "IAM M8 purifier"
+    assert devices[0].model == "IAM M8 purifier"
+    assert devices[0].product_category == "KX"
+    assert devices[0].product_type == "5"
+    assert devices[0].filter_max_runtimes == (3000, 9000)
+    assert devices[0].filter_names == ("HEPA", "炭魔方")
+    assert devices[0].iot_paas_type == IOT_PAAS_TYPE_FOG
+    assert detail_requests == ["fake-visible-device"]
+    assert tsl_requests == ["fake-visible-device"]
+
+
+@pytest.mark.asyncio
+async def test_app_device_detail_uses_current_account_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Device metadata comes from the App detail route with its exact contract."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_session_post(
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(path=path, data=data)
+        return {
+            "status": 1000,
+            "result": {
+                "productName": "Default purifier",
+                "defaultProductName": "Default purifier",
+                "productTypeName": "IAM M8 purifier",
+            },
+        }
+
+    monkeypatch.setattr(client, "_async_iam_session_post_json", fake_session_post)
+
+    result = await client.async_get_app_device_detail("fake-device-id")
+
+    assert result["productTypeName"] == "IAM M8 purifier"
+    assert captured == {
+        "path": IAM_DEVICE_DETAIL_PATH,
+        "data": {
+            "iotId": "fake-device-id",
+            "userId": "fake-user",
+            "version": IAM_DEVICE_DETAIL_VERSION,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_app_product_config_uses_filter_lifetime_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filter maximum runtimes come from the same App config list as Android."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_session_post(
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(path=path, data=data)
+        return {
+            "status": 1000,
+            "result": [
+                {
+                    "productCategory": "KX",
+                    "productType": "5",
+                    "filterMaxRuntime": 3000,
+                    "filter2MaxRuntime": 9000,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_async_iam_session_post_json", fake_session_post)
+
+    result = await client.async_list_app_product_configs()
+
+    assert result[0]["filterMaxRuntime"] == 3000
+    assert captured == {
+        "path": IAM_PRODUCT_CONFIG_PATH,
+        "data": {"version": IAM_PRODUCT_CONFIG_VERSION},
+    }
+
+
+@pytest.mark.asyncio
+async def test_fog_mqtt_credentials_use_account_scoped_app_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_session_post(
+        path: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured["path"] = path
+        return {
+            "status": 1000,
+            "result": {
+                "username": "fake-mqtt-user",
+                "password": "fake-mqtt-password",
+                "clientId": "fake-mqtt-client",
+                "topic": "/fake/+/topic",
+            },
+        }
+
+    monkeypatch.setattr(client, "_async_iam_session_post_json", fake_session_post)
+
+    credentials = await client.async_get_fog_mqtt_credentials()
+
+    assert captured == {"path": IAM_FOG_MQTT_AUTH_PATH}
+    assert credentials.username == "fake-mqtt-user"
+    assert credentials.password == "fake-mqtt-password"
+    assert credentials.client_id == "fake-mqtt-client"
+    assert credentials.topic == "/fake/+/topic"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        (1, 1),
+        ("1", 1),
+        (None, None),
+        ("invalid", None),
+    ),
+)
+def test_parse_iot_paas_type(value: object, expected: int | None) -> None:
+    """Homepage route markers tolerate numeric strings and missing values."""
+    assert parse_iot_paas_type(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_fog_device_properties_use_iam_app_control_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOG devices use the same IAM JSON command route as the Android App."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_post_json(
+        url: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(url=url, body=body, headers=headers)
+        return {"status": 1000, "message": "success"}
+
+    monkeypatch.setattr(client, "_async_post_json", fake_post_json)
+
+    await client.async_set_properties(
+        "fake-device-id",
+        {"PowerSwitch": 0},
+        iot_paas_type=IOT_PAAS_TYPE_FOG,
+    )
+
+    assert str(captured["url"]).endswith(IAM_FOG_CONTROL_PATH)
+    assert json.loads(captured["body"]) == {
+        "deviceId": "fake-device-id",
+        "operCmd": {"PowerSwitch": 0},
+    }
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["token"] == "fake-token"
+    assert headers["userName"] == "fake-account"
+    assert headers["signStr"] == "fake-sign"
+    assert headers["Content-Type"] == CONTENT_TYPE_JSON
+    assert "fake-app-secret" not in repr(captured)
+
+
+@pytest.mark.asyncio
+async def test_fog_device_snapshot_uses_iam_app_property_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOG snapshots come from the IAM route instead of stale Link state."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_post_json(
+        url: str,
+        *,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(url=url, data=data, headers=headers)
+        return {
+            "status": "1000",
+            "result": {
+                "PowerSwitch": 1,
+                "WindSpeed": 3,
+            },
+        }
+
+    monkeypatch.setattr(client, "_async_post_json", fake_post_json)
+
+    properties = await client.async_get_properties(
+        "fake-device-id",
+        iot_paas_type=IOT_PAAS_TYPE_FOG,
+    )
+
+    assert properties == {"PowerSwitch": 1, "WindSpeed": 3}
+    assert str(captured["url"]).endswith(IAM_FOG_PROPERTIES_PATH)
+    assert captured["data"] == {
+        "deviceId": "fake-device-id",
+        "version": IAM_FOG_PROPERTIES_VERSION,
+    }
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["token"] == "fake-token"
+    assert "fake-app-secret" not in repr(captured)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fog_requests_recover_replaced_iam_session_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Status 1040 triggers one serialized IAM relogin and request retries."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    old_account = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-old-token",
+        im_sign="fake-old-sign",
+    )
+    new_account = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-new-token",
+        im_sign="fake-new-sign",
+    )
+    client._account_session = old_account
+    stale_calls = 0
+    stale_ready = asyncio.Event()
+    refresh_calls = 0
+
+    async def fake_post_json(
+        _url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        nonlocal stale_calls
+        assert headers is not None
+        if headers["token"] == "fake-old-token":
+            stale_calls += 1
+            if stale_calls == 2:
+                stale_ready.set()
+            await stale_ready.wait()
+            return {"status": 1040, "message": "session replaced"}
+        assert headers["token"] == "fake-new-token"
+        return {"status": 1000, "result": {"PowerSwitch": 1}}
+
+    async def fake_iam_login() -> IamAccountSession:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return new_account
+
+    monkeypatch.setattr(client, "_async_post_json", fake_post_json)
+    monkeypatch.setattr(client, "_async_iam_login", fake_iam_login)
+
+    results = await asyncio.gather(
+        client.async_get_properties(
+            "fake-device-id",
+            iot_paas_type=IOT_PAAS_TYPE_FOG,
+        ),
+        client.async_get_properties(
+            "fake-device-id",
+            iot_paas_type=IOT_PAAS_TYPE_FOG,
+        ),
+    )
+
+    assert results == [{"PowerSwitch": 1}, {"PowerSwitch": 1}]
+    assert stale_calls == 2
+    assert refresh_calls == 1
+    assert client.account_session is new_account
+
+
+@pytest.mark.asyncio
+async def test_fog_control_failure_is_reported_without_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOG failures surface the server message without dumping private payloads."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    client._account_session = IamAccountSession(
+        user_id="fake-user",
+        username="fake-account",
+        iam_token="fake-token",
+        im_sign="fake-sign",
+    )
+
+    async def fake_post_json(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "status": 1001,
+            "message": "control rejected",
+            "result": {"private": "not-for-errors"},
+        }
+
+    monkeypatch.setattr(client, "_async_post_json", fake_post_json)
+
+    with pytest.raises(IamAirApiError, match=r"^control rejected$"):
+        await client.async_set_properties(
+            "fake-device-id",
+            {"PowerSwitch": 0},
+            iot_paas_type=IOT_PAAS_TYPE_FOG,
+        )
+
+
+@pytest.mark.asyncio
+async def test_feiyan_device_properties_use_link_living_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-FOG devices retain the Link Living property-set path."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_gateway_call(
+        path: str,
+        params: dict[str, object],
+        *,
+        api_version: str,
+    ) -> dict[str, object]:
+        captured.update(path=path, params=params, api_version=api_version)
+        return {"code": 200}
+
+    monkeypatch.setattr(client, "_async_session_gateway_call", fake_gateway_call)
+
+    await client.async_set_properties(
+        "fake-device-id",
+        {"PowerSwitch": 1},
+        iot_paas_type=0,
+    )
+
+    assert captured == {
+        "path": PATH_PROPERTIES_SET,
+        "params": {
+            "iotId": "fake-device-id",
+            "items": {"PowerSwitch": 1},
+        },
+        "api_version": API_VERSION_PROPERTIES_SET,
+    }
 
 
 def test_parse_iot_session() -> None:
@@ -137,3 +756,80 @@ def test_validate_oa_host_rejects_untrusted_values(host: str) -> None:
     """Server-provided endpoints cannot redirect requests to arbitrary hosts."""
     with pytest.raises(IamAirAuthError):
         validate_oa_host(host)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stale_session_requests_refresh_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent polling shares one recovery when another login invalidates a token."""
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    old_session = IotSession(
+        iot_token="fake-old-token",
+        refresh_token="fake-old-refresh",
+        identity_id="old-identity",
+        expires_in=3600,
+        created_at=time.monotonic(),
+    )
+    new_session = IotSession(
+        iot_token="fake-new-token",
+        refresh_token="fake-new-refresh",
+        identity_id="new-identity",
+        expires_in=3600,
+        created_at=time.monotonic(),
+    )
+    client._iot_session = old_session
+
+    stale_calls = 0
+    stale_ready = asyncio.Event()
+    refresh_calls = 0
+
+    async def fake_gateway_call(
+        _path: str,
+        _params: dict[str, object],
+        *,
+        api_version: str,
+        iot_token: str | None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        nonlocal stale_calls
+        assert api_version
+        if iot_token == "fake-old-token":
+            stale_calls += 1
+            if stale_calls == 2:
+                stale_ready.set()
+            await stale_ready.wait()
+            raise IamAirAuthError("session replaced")
+        assert iot_token == "fake-new-token"
+        return {"code": 200}
+
+    async def fake_refresh() -> None:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        client._iot_session = new_session
+
+    monkeypatch.setattr(client, "_async_gateway_call", fake_gateway_call)
+    monkeypatch.setattr(client, "_async_refresh_iot_session", fake_refresh)
+
+    results = await asyncio.gather(
+        client._async_session_gateway_call(
+            "/fake",
+            {},
+            api_version="1.0.0",
+        ),
+        client._async_session_gateway_call(
+            "/fake",
+            {},
+            api_version="1.0.0",
+        ),
+    )
+
+    assert results == [{"code": 200}, {"code": 200}]
+    assert stale_calls == 2
+    assert refresh_calls == 1
