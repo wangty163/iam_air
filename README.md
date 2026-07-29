@@ -28,10 +28,15 @@
   对应滤芯后按下。
 - IoT Token 到期前自动刷新；同账号在 App 重新登录导致旧会话失效时，自动
   串行刷新并重试原请求。
-- 5 秒云端轮询，在不引入 App 私有 MQTT SDK 的前提下缩短外部操作的状态同步延迟。
+- 复用 AppKey/AppSecret 注册 Link Living 移动端 MQTT 通道，并用当前 IoT Token
+  绑定账号；非 FOG 设备的属性会立即推送到 HA，30 秒 REST 轮询仅作为兜底。
+- FOG 设备复用 IAM 账号接口签发的 MQTT 身份接收完整属性快照，断线后自动
+  重连，并保留 5 秒属性读取兜底。该通道与 App 使用同一个服务端限定的客户端
+  ID，HA 常驻时会占用 App 的 MQTT 会话。
 - M8 Pro 屏幕控制按 App 的“当前值触发切换”语义发送，并在属性中提供
   `app_action=亮屏/息屏`；该文字表示 App 按钮的下一操作，HA 开关状态仍表示
-  `T_Panel_Status` 返回的物理屏幕是否点亮。
+  实际屏幕是否点亮。非托管模式下实际状态是最后一次 `ScreenSwitch` 切换命令
+  的反值，托管模式下才使用 `T_Panel_Status`。
 - 智能托管开启时，电源、档位、模式、童锁、负离子、消毒和定时控制会像 App
   一样拒绝直接操作；需要先关闭智能托管。
 
@@ -48,6 +53,8 @@
 - 账号密码使用 HA 密码输入框采集，只保存在用户自己的 Home Assistant
   配置存储中。
 - 日志和异常不会输出请求体、密码、Token 或签名密钥。
+- 移动端 MQTT 临时三元组和 IoT Token 只保留在进程内存中，不写入仓库、配置条目
+  或日志。
 - CI 会执行仓库敏感信息扫描。
 
 不要上传、提交或公开分发客户端凭证。提交 Issue 时也不要粘贴账号、Token、
@@ -110,6 +117,11 @@ chmod 600 /config/iam_air/credentials.json
 9. 按 App 首页返回的 `iotPaasType` 自动分流：飞燕设备走 Link Living
    `/thing/properties/get` 与 `/thing/properties/set`；FOG 设备走 IAM
    `devOperate/findDevAllProperties` 与 `devOperate/operCmd`。
+10. 用 AppKey/AppSecret 调 `/app/aepauth/handle` 获取临时移动端 MQTT 身份，
+    通过当前 IoT Token 绑定账号并监听 `/thing/properties`；按属性时间戳合并推送，
+    供非 FOG 设备实时更新。
+11. FOG 设备调用 `devOperate/findJwtToken` 获取与 App 相同的账号 MQTT 身份，
+    监听完整属性快照；同时以 5 秒 REST 读取处理 App 抢占连接或网络中断。
 
 协议边界和已确认字段见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 App 设备详情页的逐项对账见
@@ -128,9 +140,12 @@ uv run python scripts/check_no_secrets.py
 
 ## 局限
 
-- 当前只实现云端轮询，尚未实现 ALCS/CoAP 局域网控制。
-- 当前轮询间隔为 5 秒。实测单设备读取耗时约 0.07 秒，对 HA/NAS 的额外
-  开销很小；继续缩短间隔的主要风险是云端限流和会话稳定性，而不是 NAS 性能。
+- 当前实现云端 MQTT 推送和 REST 兜底，尚未实现 ALCS/CoAP 局域网控制。
+- FOG 设备的 REST 兜底间隔为 5 秒，非 FOG 设备为 30 秒。单设备对 NAS 的
+  开销很小；继续缩短主要会增加云端限流和会话抖动风险。
+- FOG MQTT 凭据把客户端 ID 固定在账号令牌中，不能派生第二个可用 ID。
+  HA 常驻连接会挤掉 App 的 MQTT 实时会话；App 仍可通过业务接口发出操作，
+  HA 最迟由 5 秒轮询同步。
 - Link Living 对同一 IAM 身份只保留一个有效 IoT 会话；集成会在 App
   登录后自动恢复，但恢复动作也会替换 App 的旧会话。若要 App 与 HA
   同时稳定在线，HA 必须使用另一个已分享设备的 IAM 账号。

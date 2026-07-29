@@ -31,6 +31,7 @@ from .const import (
     IAM_DEVICE_DETAIL_PATH,
     IAM_DEVICE_DETAIL_VERSION,
     IAM_FOG_CONTROL_PATH,
+    IAM_FOG_MQTT_AUTH_PATH,
     IAM_FOG_PROPERTIES_PATH,
     IAM_FOG_PROPERTIES_VERSION,
     IAM_HOMEPAGE_PATH,
@@ -41,6 +42,8 @@ from .const import (
     IAM_SESSION_REPLACED_STATUS,
     IOT_API_BASE_URL,
     IOT_PAAS_TYPE_FOG,
+    MOBILE_AUTH_API_VERSION,
+    MOBILE_AUTH_PATH,
     OA_LOGIN_API_PATH,
     OA_REGION_API_PATH,
     PATH_CREATE_SESSION,
@@ -52,9 +55,11 @@ from .const import (
     SESSION_ERROR_CODES,
 )
 from .models import (
+    FogMqttCredentials,
     IamAccountSession,
     IamAirDevice,
     IotSession,
+    MobileMqttCredentials,
     parse_device,
     select_app_device_metadata,
     select_app_filter_names,
@@ -101,12 +106,14 @@ class IamCloudClient:
         password: str,
         app_key: str,
         app_secret: str,
+        instance_id: str | None = None,
     ) -> None:
         self._http = http
         self._username = username.strip()
         self._password = password
         self._app_key = app_key.strip()
         self._app_secret = app_secret.strip()
+        self._instance_id = (instance_id or self._username.casefold()).strip()
         self._account_session: IamAccountSession | None = None
         self._iot_session: IotSession | None = None
         self._iam_session_refresh_lock = asyncio.Lock()
@@ -198,6 +205,51 @@ class IamCloudClient:
             api_version=API_VERSION_TSL_GET,
         )
         return result.get("data") or {}
+
+    async def async_get_mobile_mqtt_credentials(self) -> MobileMqttCredentials:
+        """Create or recover the App-compatible mobile MQTT identity."""
+        identity = f"{self._app_key}\0{self._instance_id}".encode()
+        device_sn = hashlib.sha256(b"iam-air-device\0" + identity).hexdigest()[:32]
+        client_id = hashlib.sha256(b"iam-air-client\0" + identity).hexdigest()[:8]
+        timestamp = str(int(time.time() * 1000))
+        auth_info = build_mobile_auth_info(
+            app_key=self._app_key,
+            app_secret=self._app_secret,
+            client_id=client_id,
+            device_sn=device_sn,
+            timestamp=timestamp,
+        )
+        response = await self._async_gateway_call(
+            MOBILE_AUTH_PATH,
+            {"authInfo": auth_info},
+            api_version=MOBILE_AUTH_API_VERSION,
+            iot_token=None,
+        )
+        return parse_mobile_mqtt_credentials(response)
+
+    async def async_get_fog_mqtt_credentials(self) -> FogMqttCredentials:
+        """Return the App's account-scoped FOG MQTT identity."""
+        response = await self._async_iam_session_post_json(
+            IAM_FOG_MQTT_AUTH_PATH
+        )
+        if response.get("status") not in (1000, "1000"):
+            message = response.get("message") or "IAM FOG MQTT authorization failed"
+            raise IamAirApiError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise IamAirApiError("IAM FOG MQTT response is invalid")
+        values = tuple(
+            str(result.get(field) or "")
+            for field in ("username", "password", "clientId", "topic")
+        )
+        if not all(values):
+            raise IamAirApiError("IAM FOG MQTT response is incomplete")
+        return FogMqttCredentials(
+            username=values[0],
+            password=values[1],
+            client_id=values[2],
+            topic=values[3],
+        )
 
     async def async_discover_air_devices(self) -> list[IamAirDevice]:
         """Discover app-visible devices whose TSL looks like an air purifier."""
@@ -696,6 +748,55 @@ def parse_iot_session_response(response: dict[str, Any]) -> IotSession:
         identity_id=str(data.get("identityId") or data.get("identity") or ""),
         expires_in=expires_in,
         created_at=time.monotonic(),
+    )
+
+
+def build_mobile_auth_info(
+    *,
+    app_key: str,
+    app_secret: str,
+    client_id: str,
+    device_sn: str,
+    timestamp: str,
+) -> dict[str, str]:
+    """Build the Link Living mobile-channel registration parameters."""
+    values = {
+        "appKey": app_key,
+        "clientId": client_id,
+        "deviceSn": device_sn,
+        "timestamp": timestamp,
+    }
+    sign_text = "".join(f"{key}{values[key]}" for key in sorted(values))
+    signature = hmac.new(
+        app_secret.encode(),
+        sign_text.encode(),
+        hashlib.sha1,
+    ).hexdigest()
+    return {
+        "clientId": client_id,
+        "deviceSn": device_sn,
+        "timestamp": timestamp,
+        "sign": signature,
+    }
+
+
+def parse_mobile_mqtt_credentials(
+    response: dict[str, Any],
+) -> MobileMqttCredentials:
+    """Parse the temporary mobile-channel identity without exposing it."""
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise IamAirApiError("Mobile channel response did not contain credentials")
+    values = tuple(
+        str(data.get(field) or "")
+        for field in ("productKey", "deviceName", "deviceSecret")
+    )
+    if not all(values):
+        raise IamAirApiError("Mobile channel response contained incomplete credentials")
+    return MobileMqttCredentials(
+        product_key=values[0],
+        device_name=values[1],
+        device_secret=values[2],
     )
 
 

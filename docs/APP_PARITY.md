@@ -55,12 +55,16 @@ AppKey/AppSecret 设备属性通道，不依赖商城、WebView 或账号侧场�
 
 ## 刷新机制
 
-App 的净化器详情页在属性 Provider 创建时调用一次
+非 FOG 设备的净化器详情页在属性 Provider 创建时调用一次
 `thingPropertiesGet`，随后监听 `/thing/properties` MQTT 通知，并按每个
-属性携带的时间戳合并新值；该页面没有固定间隔的循环轮询。App 回到前台
-时会恢复 MQTT 连接，并通过页面生命周期刷新账号侧页面数据。
+属性携带的时间戳合并新值。FOG 设备则调用 `findJwtToken` 获取账号 MQTT
+身份，订阅服务端返回的通配主题并接收完整属性快照。App 回到前台时会恢复
+MQTT 连接，并通过页面生命周期刷新账号侧页面数据。
 
-Home Assistant 保持 AppKey/AppSecret-only 的实现，不依赖 Android 私有
-MQTT SDK。集成每 5 秒读取一次同一设备属性接口，因此 App 或机器侧操作
-通常在 5 秒内反映到 HA；HA 自己发出的控制仍会立即显示目标状态并立刻
-请求一次云端回读。
+Home Assistant 保持 AppKey/AppSecret-only 的实现，不打包或运行 Android
+私有 SDK。非 FOG 设备通过 `/app/aepauth/handle` 和 IoT Token 绑定监听
+`/thing/properties`；FOG 设备通过 `devOperate/findJwtToken` 获取账号 MQTT
+身份并监听完整快照。两种 MQTT 都会自动重连。FOG 服务端拒绝派生客户端
+ID，HA 与 App 只能有一个长连接，因此 HA 常驻会占用 App 的 MQTT 会话；
+5 秒 FOG REST 读取负责连接被 App 抢占时的兜底同步。非 FOG REST 兜底为
+30 秒。HA 自己发出的控制仍会立即显示目标状态并立刻请求一次云端回读。

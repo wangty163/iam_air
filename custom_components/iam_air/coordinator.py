@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -17,8 +17,15 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .cloud import IamAirAuthError, IamAirError, IamCloudClient
-from .const import CONTROL_STATE_GRACE_SECONDS, DEFAULT_SCAN_INTERVAL_SECONDS, DOMAIN
+from .const import (
+    CONTROL_STATE_GRACE_SECONDS,
+    DEFAULT_SCAN_INTERVAL_SECONDS,
+    DOMAIN,
+    FOG_SCAN_INTERVAL_SECONDS,
+    IOT_PAAS_TYPE_FOG,
+)
 from .models import DeviceSnapshot, IamAirDevice
+from .mqtt import MqttPropertyPush
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +36,14 @@ class _PendingProperty:
 
     value: object
     expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _PushedProperty:
+    """A timestamped property received from the App-compatible channel."""
+
+    value: object
+    timestamp: int
 
 
 def _reconcile_pending_properties(
@@ -60,16 +75,25 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         client: IamCloudClient,
         devices: list[IamAirDevice],
     ) -> None:
+        scan_interval = (
+            FOG_SCAN_INTERVAL_SECONDS
+            if any(
+                device.iot_paas_type == IOT_PAAS_TYPE_FOG for device in devices
+            )
+            else DEFAULT_SCAN_INTERVAL_SECONDS
+        )
         super().__init__(
             hass,
             logger=_LOGGER,
             name=DOMAIN,
             config_entry=config_entry,
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL_SECONDS),
+            update_interval=timedelta(seconds=scan_interval),
         )
         self.client = client
         self.devices = {device.iot_id: device for device in devices}
         self._pending_properties: dict[str, dict[str, _PendingProperty]] = {}
+        self._pushed_properties: dict[str, dict[str, _PushedProperty]] = {}
+        self._push_connected = False
 
     async def _async_update_data(self) -> dict[str, DeviceSnapshot]:
         results = await asyncio.gather(
@@ -99,6 +123,18 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                     pending,
                     now=time.monotonic(),
                 )
+                device = self.devices[iot_id]
+                if device.iot_paas_type == IOT_PAAS_TYPE_FOG:
+                    self._pushed_properties.pop(iot_id, None)
+                elif self._push_connected:
+                    properties.update(
+                        {
+                            identifier: pushed.value
+                            for identifier, pushed in self._pushed_properties.get(
+                                iot_id, {}
+                            ).items()
+                        }
+                    )
                 if not pending:
                     self._pending_properties.pop(iot_id, None)
                 snapshots[iot_id] = DeviceSnapshot(properties=properties)
@@ -133,6 +169,11 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
             raise UpdateFailed(f"Unable to control IAM Air device: {err}") from err
 
         visible_items = optimistic_items or items
+        pushed = self._pushed_properties.get(iot_id, {})
+        for identifier in visible_items:
+            pushed.pop(identifier, None)
+        if not pushed:
+            self._pushed_properties.pop(iot_id, None)
         expires_at = time.monotonic() + CONTROL_STATE_GRACE_SECONDS
         pending = self._pending_properties.setdefault(iot_id, {})
         pending.update(
@@ -151,3 +192,46 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         )
         self.async_set_updated_data(current)
         await self.async_request_refresh()
+
+    @callback
+    def async_apply_property_push(self, push: MqttPropertyPush) -> None:
+        """Merge a newer MQTT property event into the active HA snapshot."""
+        if push.iot_id not in self.devices:
+            return
+        pushed = self._pushed_properties.setdefault(push.iot_id, {})
+        accepted: dict[str, object] = {}
+        for identifier, item in push.items.items():
+            previous = pushed.get(identifier)
+            if previous is not None and item.timestamp < previous.timestamp:
+                continue
+            pushed[identifier] = _PushedProperty(
+                value=item.value,
+                timestamp=item.timestamp,
+            )
+            accepted[identifier] = item.value
+        if not accepted:
+            return
+
+        self._push_connected = True
+        pending = self._pending_properties.get(push.iot_id, {})
+        for identifier in accepted:
+            pending.pop(identifier, None)
+        if not pending:
+            self._pending_properties.pop(push.iot_id, None)
+
+        current = dict(self.data or {})
+        previous = current.get(push.iot_id)
+        properties = dict(previous.properties if previous else {})
+        properties.update(accepted)
+        current[push.iot_id] = DeviceSnapshot(
+            properties=properties,
+            available=True,
+        )
+        self.async_set_updated_data(current)
+
+    @callback
+    def async_set_push_connected(self, connected: bool) -> None:
+        """Track whether push values can safely override stale REST snapshots."""
+        self._push_connected = connected
+        if not connected:
+            self._pushed_properties.clear()

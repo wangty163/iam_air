@@ -16,10 +16,12 @@ from custom_components.iam_air.cloud import (
     IamAirAuthError,
     IamCloudClient,
     build_gateway_request,
+    build_mobile_auth_info,
     parse_iam_homepage_response,
     parse_iam_login_response,
     parse_iot_paas_type,
     parse_iot_session_response,
+    parse_mobile_mqtt_credentials,
     validate_oa_host,
 )
 from custom_components.iam_air.const import (
@@ -27,6 +29,7 @@ from custom_components.iam_air.const import (
     IAM_DEVICE_DETAIL_PATH,
     IAM_DEVICE_DETAIL_VERSION,
     IAM_FOG_CONTROL_PATH,
+    IAM_FOG_MQTT_AUTH_PATH,
     IAM_FOG_PROPERTIES_PATH,
     IAM_FOG_PROPERTIES_VERSION,
     IAM_PRODUCT_CONFIG_PATH,
@@ -82,6 +85,54 @@ def test_gateway_signature_is_deterministic_and_secret_is_not_transmitted() -> N
         ).digest()
     ).decode()
     assert request.headers["X-Ca-Signature"] == expected
+
+
+def test_mobile_auth_signature_matches_app_sdk() -> None:
+    """Mobile registration signs the four sorted auth fields with AppSecret."""
+    auth_info = build_mobile_auth_info(
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+        client_id="client01",
+        device_sn="device01",
+        timestamp="1234567890000",
+    )
+    sign_text = (
+        "appKeyfake-app-key"
+        "clientIdclient01"
+        "deviceSndevice01"
+        "timestamp1234567890000"
+    )
+    expected = hmac.new(
+        b"fake-app-secret",
+        sign_text.encode(),
+        hashlib.sha1,
+    ).hexdigest()
+
+    assert auth_info == {
+        "clientId": "client01",
+        "deviceSn": "device01",
+        "timestamp": "1234567890000",
+        "sign": expected,
+    }
+    assert "fake-app-secret" not in json.dumps(auth_info)
+
+
+def test_parse_mobile_mqtt_credentials_requires_complete_triple() -> None:
+    credentials = parse_mobile_mqtt_credentials(
+        {
+            "data": {
+                "productKey": "fake-product",
+                "deviceName": "fake-device",
+                "deviceSecret": "fake-secret",
+            }
+        }
+    )
+
+    assert credentials.product_key == "fake-product"
+    assert credentials.device_name == "fake-device"
+    assert credentials.device_secret == "fake-secret"
+    with pytest.raises(IamAirApiError):
+        parse_mobile_mqtt_credentials({"data": {"productKey": "fake-product"}})
 
 
 @pytest.mark.parametrize("status", (1000, "1000"))
@@ -351,6 +402,45 @@ async def test_app_product_config_uses_filter_lifetime_route(
         "path": IAM_PRODUCT_CONFIG_PATH,
         "data": {"version": IAM_PRODUCT_CONFIG_VERSION},
     }
+
+
+@pytest.mark.asyncio
+async def test_fog_mqtt_credentials_use_account_scoped_app_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = IamCloudClient(
+        None,  # type: ignore[arg-type]
+        username="fake-account",
+        password="fake-password",
+        app_key="fake-app-key",
+        app_secret="fake-app-secret",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_session_post(
+        path: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured["path"] = path
+        return {
+            "status": 1000,
+            "result": {
+                "username": "fake-mqtt-user",
+                "password": "fake-mqtt-password",
+                "clientId": "fake-mqtt-client",
+                "topic": "/fake/+/topic",
+            },
+        }
+
+    monkeypatch.setattr(client, "_async_iam_session_post_json", fake_session_post)
+
+    credentials = await client.async_get_fog_mqtt_credentials()
+
+    assert captured == {"path": IAM_FOG_MQTT_AUTH_PATH}
+    assert credentials.username == "fake-mqtt-user"
+    assert credentials.password == "fake-mqtt-password"
+    assert credentials.client_id == "fake-mqtt-client"
+    assert credentials.topic == "/fake/+/topic"
 
 
 @pytest.mark.parametrize(

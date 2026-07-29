@@ -203,7 +203,7 @@ async def test_kx_type_5_screen_turn_on_leaves_sleep_mode_first() -> None:
         {"ScreenSwitch": 0},
     )
     assert coordinator.async_set_properties.await_args_list[0].kwargs == {
-        "optimistic_items": {"ScreenSwitch": 1, "T_Panel_Status": 1}
+        "optimistic_items": {"ScreenSwitch": 0, "T_Panel_Status": 1}
     }
     assert coordinator.async_set_properties.await_args_list[1].args == (
         "fake-device-id",
@@ -235,12 +235,12 @@ async def test_kx_type_5_screen_uses_panel_state_during_trusteeship() -> None:
     coordinator.async_set_properties.assert_awaited_once_with(
         "fake-device-id",
         {"ScreenSwitch": 1},
-        optimistic_items={"ScreenSwitch": 0, "T_Panel_Status": 0},
+        optimistic_items={"ScreenSwitch": 1, "T_Panel_Status": 0},
     )
 
 
-async def test_kx_type_5_screen_uses_physical_panel_feedback() -> None:
-    """Physical panel feedback wins when the REST command value is stale."""
+async def test_kx_type_5_screen_inverts_last_toggle_command() -> None:
+    """Outside trusteeship, the App's same-value command means the new opposite."""
     device, coordinator = make_device_and_coordinator()
     screen = IamAirSwitch(
         coordinator,
@@ -262,13 +262,13 @@ async def test_kx_type_5_screen_uses_physical_panel_feedback() -> None:
     coordinator.async_set_properties.assert_awaited_once_with(
         "fake-device-id",
         {"ScreenSwitch": 1},
-        optimistic_items={"ScreenSwitch": 0, "T_Panel_Status": 0},
+        optimistic_items={"ScreenSwitch": 1, "T_Panel_Status": 0},
     )
 
     coordinator.data[device.iot_id].properties.update(
         {
             "ScreenSwitch": 1,
-            "T_Panel_Status": 0,
+            "T_Panel_Status": 1,
         }
     )
     assert not screen.is_on

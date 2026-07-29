@@ -93,6 +93,8 @@ therefore still requires a separate IAM identity with the device shared to it.
 | `/thing/tsl/get` | `1.0.4` | Fetch the device TSL |
 | `/thing/properties/get` | `1.0.4` | Read property snapshot |
 | `/thing/properties/set` | `1.0.2` | Write properties for Feiyan devices |
+| `/app/aepauth/handle` | `1.0.0` | Create/recover a temporary mobile MQTT identity |
+| `IAM devOperate/findJwtToken` | n/a | Fetch the account-scoped FOG MQTT identity |
 | `IAM devOperate/findDevAllProperties` | `3.5.0` | Read FOG properties |
 | `IAM devOperate/operCmd` | n/a | Write properties for FOG devices |
 | `/account/checkOrRefreshSession` | `1.0.4` | Refresh IoT session |
@@ -112,6 +114,44 @@ can still expose its TSL and a stale property snapshot through Link Living,
 while Link Living property writes return an offline-device error. Consequently,
 successful Link Living reads are not evidence that either the snapshot is
 current or the Link Living write path is valid for that device.
+
+### Mobile property push
+
+For non-FOG devices, the App reads the detail-page snapshot once and then merges
+`/thing/properties` mobile-channel events by each item's `time`.
+
+The integration follows the same split without embedding the Android SDK:
+
+1. It sends `clientId`, `deviceSn`, `timestamp` and an AppSecret HMAC-SHA1
+   signature to `/app/aepauth/handle`.
+2. The response supplies a temporary mobile `productKey`, `deviceName` and
+   `deviceSecret`. These values remain in process memory and are never logged.
+3. It opens TLS MQTT with the standard Alibaba device HMAC-SHA1 login.
+4. It subscribes to the temporary identity's `/app/down/#` topic and publishes
+   an account-bind request to `/app/up/account/bind` containing the current
+   `iotToken`.
+5. `/thing/properties` payloads are merged into the HA coordinator by `iotId`
+   and per-property timestamp.
+
+The client automatically reconnects, re-subscribes and rebinds when the IoT
+session changes. A 30-second REST read remains as initialization and disconnect
+fallback.
+
+FOG devices use a separate App channel:
+
+1. `devOperate/findJwtToken` returns `username`, `password`, `clientId` and a
+   wildcard subscription topic.
+2. The client opens MQTT 3.1.1 over TLS to the FOG broker, with clean session
+   enabled, keepalive 60 seconds and QoS 1 subscription, matching the App.
+3. Each event contains a device ID and a full `data` property snapshot. The
+   integration merges it immediately into the matching HA device.
+
+The FOG broker rejects a derived client ID and repeated authorization calls
+return the same account-scoped ID. HA and the App therefore cannot keep two FOG
+MQTT sessions alive simultaneously. This integration gives the long connection
+to HA and retains a five-second FOG REST fallback for App takeovers and network
+interruptions. Push initialization failure never prevents the integration from
+loading through the fallback path.
 
 References:
 
@@ -157,20 +197,21 @@ The Android App treats the KX product type `5` screen as context-sensitive:
 
 - sleep mode renders the screen off; requesting the screen sends the current
   value as a toggle command and then leaves sleep mode;
-- `ScreenSwitch` is the same-value toggle command used by the M8 Pro control,
-  while `T_Panel_Status` is the physical panel feedback;
-- the App's MQTT cache normally keeps both values current, but the REST
-  `thing/properties/get` snapshot can leave `ScreenSwitch` at an older command
-  value even while `T_Panel_Status` reports the live panel state;
-- Home Assistant therefore renders the physical state from `T_Panel_Status`
-  whenever it is available and only falls back to `ScreenSwitch`;
+- `ScreenSwitch` stores the same-value toggle command used by the M8 Pro
+  control: `1` means the previously lit screen was asked to turn off, while
+  `0` means the previously dark screen was asked to turn on;
+- outside trusteeship, Home Assistant therefore renders the actual state as the
+  inverse of `ScreenSwitch`; live FOG snapshots confirm that
+  `T_Panel_Status` can remain `1` across both operations;
+- while `Trusteeship=1`, the App switches to `T_Panel_Status`, and Home
+  Assistant follows that same branch;
 - a powered-off device is always rendered as screen off.
 
 Unlike an ordinary boolean setter, the type-5 App sends the currently displayed
 value of `ScreenSwitch` when the user requests the opposite state. The device
 interprets that same-value write as a toggle command. Home Assistant mirrors
-that command behavior while optimistically displaying the requested target
-from `T_Panel_Status` until cloud telemetry catches up. Its `app_action`
+that command behavior while optimistically exposing the inverse command as the
+requested target until cloud telemetry catches up. Its `app_action`
 attribute exposes the App's `亮屏`/`息屏` button text; this is the next action,
 not the current state.
 

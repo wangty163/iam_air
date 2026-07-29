@@ -12,6 +12,7 @@ from homeassistant.const import (
     CONF_PASSWORD,
     CONF_USERNAME,
     EVENT_HOMEASSISTANT_STARTED,
+    EVENT_HOMEASSISTANT_STOP,
 )
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
@@ -31,6 +32,7 @@ from .const import (
     CREDENTIALS_DIRECTORY,
     CREDENTIALS_FILENAME,
     DOMAIN,
+    IOT_PAAS_TYPE_FOG,
     PLATFORMS,
 )
 from .coordinator import IamAirCoordinator
@@ -39,6 +41,7 @@ from .credentials import (
     IamAppCredentials,
     load_app_credentials,
 )
+from .mqtt import IamAirFogMqttPushClient, IamAirMqttPushClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +52,7 @@ class IamAirRuntimeData:
 
     client: IamCloudClient
     coordinator: IamAirCoordinator
+    mqtt_push: IamAirFogMqttPushClient | IamAirMqttPushClient
     active_unique_ids: set[str] = field(default_factory=set)
 
 
@@ -145,6 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bo
             password=entry.data[CONF_PASSWORD],
             app_key=credentials.app_key,
             app_secret=credentials.app_secret,
+            instance_id=entry.entry_id,
         )
         await client.async_login()
         devices = await client.async_discover_air_devices()
@@ -169,9 +174,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bo
         devices=devices,
     )
     await coordinator.async_config_entry_first_refresh()
+    if any(device.iot_paas_type == IOT_PAAS_TYPE_FOG for device in devices):
+        mqtt_push: IamAirFogMqttPushClient | IamAirMqttPushClient = (
+            IamAirFogMqttPushClient(
+                hass,
+                cloud=client,
+                on_properties=coordinator.async_apply_property_push,
+                on_connection=coordinator.async_set_push_connected,
+            )
+        )
+    else:
+        mqtt_push = IamAirMqttPushClient(
+            hass,
+            cloud=client,
+            on_properties=coordinator.async_apply_property_push,
+            on_connection=coordinator.async_set_push_connected,
+        )
+    await mqtt_push.async_start()
+
+    @callback
+    def async_stop_mqtt(_event: Any) -> None:
+        hass.async_create_task(
+            mqtt_push.async_stop(),
+            "iam_air_mqtt_shutdown",
+        )
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP,
+            async_stop_mqtt,
+        )
+    )
     entry.runtime_data = IamAirRuntimeData(
         client=client,
         coordinator=coordinator,
+        mqtt_push=mqtt_push,
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     active_iot_ids = {device.iot_id for device in devices}
@@ -220,4 +257,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bo
 
 async def async_unload_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bool:
     """Unload an IAM Air config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        await entry.runtime_data.mqtt_push.async_stop()
+    return unloaded

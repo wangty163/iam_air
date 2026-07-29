@@ -36,6 +36,25 @@ class IotSession:
 
 
 @dataclass(frozen=True, slots=True)
+class MobileMqttCredentials:
+    """Temporary mobile-channel MQTT identity."""
+
+    product_key: str = field(repr=False)
+    device_name: str = field(repr=False)
+    device_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FogMqttCredentials:
+    """Temporary FOG MQTT identity returned by the IAM account service."""
+
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+    client_id: str = field(repr=False)
+    topic: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class TslProperty:
     """One property from an Alibaba Thing Specification Language document."""
 
