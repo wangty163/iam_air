@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -15,10 +17,36 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .cloud import IamAirAuthError, IamAirError, IamCloudClient
-from .const import DEFAULT_SCAN_INTERVAL_SECONDS, DOMAIN
+from .const import CONTROL_STATE_GRACE_SECONDS, DEFAULT_SCAN_INTERVAL_SECONDS, DOMAIN
 from .models import DeviceSnapshot, IamAirDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingProperty:
+    """A successfully written value waiting for cloud read-back."""
+
+    value: object
+    expires_at: float
+
+
+def _reconcile_pending_properties(
+    properties: dict[str, object],
+    pending: dict[str, _PendingProperty],
+    *,
+    now: float,
+) -> dict[str, object]:
+    """Keep successful writes visible until the polling API catches up."""
+    reconciled = dict(properties)
+    for identifier, write in list(pending.items()):
+        if reconciled.get(identifier) == write.value:
+            pending.pop(identifier)
+        elif now < write.expires_at:
+            reconciled[identifier] = write.value
+        else:
+            pending.pop(identifier)
+    return reconciled
 
 
 class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
@@ -41,6 +69,7 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         )
         self.client = client
         self.devices = {device.iot_id: device for device in devices}
+        self._pending_properties: dict[str, dict[str, _PendingProperty]] = {}
 
     async def _async_update_data(self) -> dict[str, DeviceSnapshot]:
         results = await asyncio.gather(
@@ -64,7 +93,15 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                     available=False,
                 )
             else:
-                snapshots[iot_id] = DeviceSnapshot(properties=result)
+                pending = self._pending_properties.get(iot_id, {})
+                properties = _reconcile_pending_properties(
+                    result,
+                    pending,
+                    now=time.monotonic(),
+                )
+                if not pending:
+                    self._pending_properties.pop(iot_id, None)
+                snapshots[iot_id] = DeviceSnapshot(properties=properties)
 
         if failures and len(failures) == len(self.devices):
             error = failures[0]
@@ -88,4 +125,22 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
             )
         except IamAirError as err:
             raise UpdateFailed(f"Unable to control IAM Air device: {err}") from err
+
+        expires_at = time.monotonic() + CONTROL_STATE_GRACE_SECONDS
+        pending = self._pending_properties.setdefault(iot_id, {})
+        pending.update(
+            {
+                identifier: _PendingProperty(value=value, expires_at=expires_at)
+                for identifier, value in items.items()
+            }
+        )
+        current = dict(self.data or {})
+        previous = current.get(iot_id)
+        optimistic = dict(previous.properties if previous else {})
+        optimistic.update(items)
+        current[iot_id] = DeviceSnapshot(
+            properties=optimistic,
+            available=previous.available if previous else True,
+        )
+        self.async_set_updated_data(current)
         await self.async_request_refresh()

@@ -51,6 +51,8 @@ class IamAirFan(IamAirEntity, FanEntity):
         self._mode = device.find_property(*MODE_PROPERTY_ALIASES)
 
         features = FanEntityFeature(0)
+        if self._power and self._power.writable:
+            features |= FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
         if self._speed and self._speed.writable:
             features |= FanEntityFeature.SET_SPEED
         if self._mode and self._mode.writable and self._mode.enum_options:

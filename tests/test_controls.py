@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+from homeassistant.components.fan import FanEntityFeature
+
 from custom_components.iam_air.button import IamAirFilterResetButton
 from custom_components.iam_air.fan import IamAirFan
 from custom_components.iam_air.models import DeviceSnapshot, parse_device
@@ -117,11 +119,25 @@ async def test_fan_exposes_power_six_speeds_and_three_modes() -> None:
     assert fan.percentage == 50
     assert fan.preset_modes == ["自动", "手动", "睡眠"]
     assert fan.preset_mode == "手动"
+    assert fan.supported_features & FanEntityFeature.TURN_ON
+    assert fan.supported_features & FanEntityFeature.TURN_OFF
 
     await fan.async_set_percentage(100)
     coordinator.async_set_properties.assert_awaited_once_with(
         "fake-device-id",
         {"WindSpeed": 5, "PowerSwitch": 1},
+    )
+
+    coordinator.async_set_properties.reset_mock()
+    await fan.async_turn_off()
+    await fan.async_turn_on()
+    assert coordinator.async_set_properties.await_args_list[0].args == (
+        "fake-device-id",
+        {"PowerSwitch": 0},
+    )
+    assert coordinator.async_set_properties.await_args_list[1].args == (
+        "fake-device-id",
+        {"PowerSwitch": 1},
     )
 
 

@@ -62,6 +62,22 @@ def test_parse_tsl_and_detect_air_purifier() -> None:
     assert device.find_property("PM25").unit == "µg/m³"
 
 
+def test_app_display_name_overrides_cloud_device_identifier() -> None:
+    """The name rendered by the App wins over a machine-generated device name."""
+    device = parse_device(
+        {
+            "iotId": "fake-device-id",
+            "deviceName": "machinegenerated12345",
+            "productName": "M8",
+            "status": 1,
+        },
+        TSL,
+        display_name="Living room purifier",
+    )
+
+    assert device.name == "Living room purifier"
+
+
 def test_enum_and_numeric_specs() -> None:
     """TSL enum labels and numeric ranges round-trip."""
     properties = parse_tsl(TSL)

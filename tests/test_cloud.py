@@ -183,6 +183,7 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
             {
                 "iotId": "fake-visible-device",
                 "iotPaasType": IOT_PAAS_TYPE_FOG,
+                "productName": "App-visible purifier",
             }
         ]
 
@@ -209,6 +210,7 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
     devices = await client.async_discover_air_devices()
 
     assert [device.iot_id for device in devices] == ["fake-visible-device"]
+    assert devices[0].name == "App-visible purifier"
     assert devices[0].iot_paas_type == IOT_PAAS_TYPE_FOG
     assert tsl_requests == ["fake-visible-device"]
 

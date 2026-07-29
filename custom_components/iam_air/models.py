@@ -250,12 +250,19 @@ def parse_device(
     raw: dict[str, Any],
     tsl: Any,
     *,
+    display_name: str | None = None,
     iot_paas_type: int | None = None,
 ) -> IamAirDevice:
     """Create a device model from binding-list data and its TSL."""
     iot_id = str(raw.get("iotId") or "")
     name = str(
-        raw.get("nickName") or raw.get("devName") or raw.get("deviceName") or "IAM Air"
+        display_name
+        or raw.get("nickName")
+        or raw.get("devName")
+        or raw.get("productName")
+        or raw.get("categoryName")
+        or raw.get("deviceName")
+        or "IAM Air"
     )
     return IamAirDevice(
         iot_id=iot_id,

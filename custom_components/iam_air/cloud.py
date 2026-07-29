@@ -171,6 +171,8 @@ class IamCloudClient:
             device = parse_device(
                 raw_device,
                 tsl,
+                display_name=str(app_devices[iot_id].get("productName") or "").strip()
+                or None,
                 iot_paas_type=parse_iot_paas_type(
                     app_devices[iot_id].get("iotPaasType")
                 ),
