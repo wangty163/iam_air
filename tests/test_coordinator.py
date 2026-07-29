@@ -3,12 +3,18 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from custom_components.iam_air.const import DEFAULT_SCAN_INTERVAL_SECONDS
 from custom_components.iam_air.coordinator import (
     IamAirCoordinator,
     _PendingProperty,
     _reconcile_pending_properties,
 )
 from custom_components.iam_air.models import DeviceSnapshot
+
+
+def test_external_app_changes_poll_within_ten_seconds() -> None:
+    """External App commands should not leave HA stale for a full 30 seconds."""
+    assert DEFAULT_SCAN_INTERVAL_SECONDS == 10
 
 
 def test_pending_write_masks_stale_cloud_read() -> None:
