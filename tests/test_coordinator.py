@@ -96,3 +96,36 @@ async def test_successful_write_is_published_before_refresh() -> None:
         "PM25": 12,
     }
     coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+async def test_toggle_command_can_publish_a_different_target_state() -> None:
+    """A same-value App command may optimistically expose its toggle result."""
+    coordinator = object.__new__(IamAirCoordinator)
+    coordinator.client = MagicMock()
+    coordinator.client.async_set_properties = AsyncMock()
+    coordinator.devices = {
+        "fake-device-id": SimpleNamespace(iot_paas_type=1),
+    }
+    coordinator._pending_properties = {}
+    coordinator.data = {
+        "fake-device-id": DeviceSnapshot(properties={"ScreenSwitch": 1})
+    }
+    coordinator.async_set_updated_data = MagicMock()
+    coordinator.async_request_refresh = AsyncMock()
+
+    await coordinator.async_set_properties(
+        "fake-device-id",
+        {"ScreenSwitch": 1},
+        optimistic_items={"ScreenSwitch": 0},
+    )
+
+    coordinator.client.async_set_properties.assert_awaited_once_with(
+        "fake-device-id",
+        {"ScreenSwitch": 1},
+        iot_paas_type=1,
+    )
+    published = coordinator.async_set_updated_data.call_args.args[0]
+    assert published["fake-device-id"].properties["ScreenSwitch"] == 0
+    assert coordinator._pending_properties["fake-device-id"][
+        "ScreenSwitch"
+    ].value == 0

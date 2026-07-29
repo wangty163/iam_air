@@ -5,12 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
 from .const import POWER_PROPERTY_ALIASES
-from .entity import IamAirEntity, add_iam_entities
+from .entity import IamAirEntity, add_iam_entities, app_property_name
 from .models import IamAirDevice, TslProperty, value_as_bool
 
 SWITCH_ALIASES = (
@@ -64,7 +63,7 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
             unique_suffix=prop.identifier.lower(),
         )
         self._property = prop
-        self._attr_name = prop.name
+        self._attr_name = app_property_name(device, prop)
 
     @property
     def is_on(self) -> bool | None:
@@ -91,6 +90,7 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
         if self._is_special_screen_switch:
             await self._async_set_special_screen(True)
             return
+        self._ensure_control_allowed(turn_on=True)
         await self.coordinator.async_set_properties(
             self.device.iot_id,
             {self._property.identifier: self._property.coerce_value(1)},
@@ -101,6 +101,7 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
         if self._is_special_screen_switch:
             await self._async_set_special_screen(False)
             return
+        self._ensure_control_allowed(turn_on=False)
         await self.coordinator.async_set_properties(
             self.device.iot_id,
             {self._property.identifier: self._property.coerce_value(0)},
@@ -114,28 +115,55 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
         )
 
     async def _async_set_special_screen(self, turn_on: bool) -> None:
-        """Apply the same KX type-5 screen constraints as the Android App."""
-        if not value_as_bool(self.property_value("PowerSwitch")):
-            raise HomeAssistantError(
-                "The purifier must be powered on before changing its screen"
-            )
+        """Send the current KX type-5 screen value as the App's toggle command."""
+        self.ensure_app_control_allowed(
+            require_power=True,
+            allow_during_trusteeship=True,
+        )
+        current_state = self.is_on
+        if current_state is None or current_state == turn_on:
+            return
+        current_command = 1 if current_state else 0
+        desired_value = self._property.coerce_value(1 if turn_on else 0)
+        optimistic_items: dict[str, object] = {
+            self._property.identifier: desired_value
+        }
         if value_as_bool(self.property_value("Trusteeship")):
-            raise HomeAssistantError(
-                "Disable smart trusteeship before changing the screen"
-            )
+            optimistic_items["T_Panel_Status"] = 1 if turn_on else 0
+        await self.coordinator.async_set_properties(
+            self.device.iot_id,
+            {
+                self._property.identifier: self._property.coerce_value(
+                    current_command
+                )
+            },
+            optimistic_items=optimistic_items,
+        )
         work_mode = self.property_value("WorkMode")
         if turn_on and work_mode in (2, "2"):
             await self.coordinator.async_set_properties(
                 self.device.iot_id,
                 {"WorkMode": 0},
             )
-        if not turn_on and work_mode in (2, "2"):
+    @property
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        """Expose the App's action label without confusing it with state."""
+        if not self._is_special_screen_switch or self.is_on is None:
+            return None
+        return {"app_action": "息屏" if self.is_on else "亮屏"}
+
+    def _ensure_control_allowed(self, *, turn_on: bool) -> None:
+        identifier = self._property.identifier.casefold()
+        if identifier in {"trusteeship", "trustswitch"}:
+            self.ensure_trusteeship_control_allowed(turn_on=turn_on)
             return
-        await self.coordinator.async_set_properties(
-            self.device.iot_id,
-            {
-                self._property.identifier: self._property.coerce_value(
-                    1 if turn_on else 0
-                )
+        if identifier in {"t_disinfectswitch", "t_ionsswitch"}:
+            return
+        self.ensure_app_control_allowed(
+            require_power=identifier not in {
+                "powerswitch",
+                "powerstate",
+                "power",
             },
+            allow_during_trusteeship=identifier == "screenswitch",
         )

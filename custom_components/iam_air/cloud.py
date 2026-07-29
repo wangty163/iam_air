@@ -57,6 +57,7 @@ from .models import (
     IotSession,
     parse_device,
     select_app_device_metadata,
+    select_app_filter_names,
     select_filter_max_runtimes,
 )
 
@@ -229,6 +230,10 @@ class IamCloudClient:
             )
             product_category = str(detail.get("productCategory") or "")
             product_type = str(detail.get("productType") or "")
+            filter_max_runtimes = select_filter_max_runtimes(
+                detail,
+                product_configs,
+            )
             device = parse_device(
                 raw_device,
                 tsl,
@@ -236,9 +241,10 @@ class IamCloudClient:
                 model_name=model_name,
                 product_category=product_category,
                 product_type=product_type,
-                filter_max_runtimes=select_filter_max_runtimes(
+                filter_max_runtimes=filter_max_runtimes,
+                filter_names=select_app_filter_names(
                     detail,
-                    product_configs,
+                    filter_max_runtimes,
                 ),
                 iot_paas_type=parse_iot_paas_type(
                     app_device.get("iotPaasType")

@@ -9,7 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
 from .const import MODE_PROPERTY_ALIASES, SPEED_PROPERTY_ALIASES
-from .entity import IamAirEntity, add_iam_entities
+from .entity import IamAirEntity, add_iam_entities, app_property_name
 from .models import IamAirDevice, TslProperty
 
 SELECT_ALIASES = (
@@ -18,6 +18,11 @@ SELECT_ALIASES = (
     ("T_ON_TVOCLevel",),
     ("T_OFF_TVOCLevel",),
 )
+
+APP_SELECT_OPTIONS = {
+    "t_off_tvoclevel": {"0", "1", "2", "3"},
+    "t_on_tvoclevel": {"0", "2", "3", "4"},
+}
 
 
 async def async_setup_entry(
@@ -60,8 +65,13 @@ class IamAirSelect(IamAirEntity, SelectEntity):
             unique_suffix=prop.identifier.lower(),
         )
         self._property = prop
-        self._attr_name = prop.name
-        self._attr_options = list(prop.enum_options.values())
+        self._attr_name = app_property_name(device, prop)
+        allowed_values = APP_SELECT_OPTIONS.get(prop.identifier.casefold())
+        self._attr_options = [
+            label
+            for raw_value, label in prop.enum_options.items()
+            if allowed_values is None or raw_value in allowed_values
+        ]
 
     @property
     def current_option(self) -> str | None:
@@ -72,6 +82,13 @@ class IamAirSelect(IamAirEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Select an enum option."""
+        if self._property.identifier.casefold() in {
+            "windspeed",
+            "workmode",
+            "fanspeed",
+            "mode",
+        }:
+            self.ensure_app_control_allowed(require_power=True)
         value = self._property.value_for_option(option)
         if value is None:
             raise ValueError(f"Unsupported option: {option}")

@@ -6,6 +6,7 @@ from custom_components.iam_air.models import (
     parse_tsl,
     percentage_for_property,
     select_app_device_metadata,
+    select_app_filter_names,
     select_filter_max_runtimes,
     value_as_bool,
     value_for_percentage,
@@ -148,6 +149,18 @@ def test_filter_max_runtimes_reject_missing_or_nonpositive_values() -> None:
     )
 
     assert result == (None, None)
+
+
+def test_app_filter_names_match_xdj_dual_filter_titles() -> None:
+    """KX dual-filter devices use the two static titles rendered by the App."""
+    assert select_app_filter_names(
+        {"productCategory": "KX", "productType": "5"},
+        (3000, 9000),
+    ) == ("HEPA", "炭魔方")
+    assert select_app_filter_names(
+        {"productCategory": "KX", "productType": "2"},
+        (3000, None),
+    ) == ("滤网", None)
 
 
 def test_enum_and_numeric_specs() -> None:

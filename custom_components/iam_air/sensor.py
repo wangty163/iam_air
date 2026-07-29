@@ -20,7 +20,7 @@ from homeassistant.const import (
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
-from .entity import IamAirEntity, add_iam_entities
+from .entity import IamAirEntity, add_iam_entities, app_property_name
 from .models import IamAirDevice, TslProperty
 
 
@@ -139,6 +139,7 @@ async def async_setup_entry(
                     device,
                     prop=prop,
                     filter_index=index,
+                    filter_name=device.filter_names[index - 1],
                     maximum_runtime=maximum,
                 )
             )
@@ -162,7 +163,7 @@ class IamAirSensor(IamAirEntity, SensorEntity):
             unique_suffix=prop.identifier.lower(),
         )
         self._property = prop
-        self._attr_name = prop.name
+        self._attr_name = app_property_name(device, prop)
         self._attr_device_class = spec.device_class
         self._attr_native_unit_of_measurement = normalize_unit(
             prop.unit or spec.default_unit
@@ -191,6 +192,7 @@ class IamAirFilterLifeSensor(IamAirEntity, SensorEntity):
         *,
         prop: TslProperty,
         filter_index: int,
+        filter_name: str | None,
         maximum_runtime: int,
     ) -> None:
         super().__init__(
@@ -200,7 +202,11 @@ class IamAirFilterLifeSensor(IamAirEntity, SensorEntity):
         )
         self._property = prop
         self._maximum_runtime = maximum_runtime
-        self._attr_name = f"滤芯{filter_index}剩余寿命"
+        self._attr_name = (
+            f"{filter_name}滤芯寿命"
+            if filter_name
+            else f"滤芯{filter_index}寿命"
+        )
 
     @property
     def native_value(self) -> int | None:

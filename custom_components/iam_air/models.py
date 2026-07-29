@@ -127,6 +127,7 @@ class IamAirDevice:
     product_category: str = ""
     product_type: str = ""
     filter_max_runtimes: tuple[int | None, int | None] = (None, None)
+    filter_names: tuple[str | None, str | None] = (None, None)
     properties: dict[str, TslProperty] = field(default_factory=dict)
     iot_paas_type: int | None = None
 
@@ -263,6 +264,7 @@ def parse_device(
     product_category: str | None = None,
     product_type: str | None = None,
     filter_max_runtimes: tuple[int | None, int | None] = (None, None),
+    filter_names: tuple[str | None, str | None] = (None, None),
     iot_paas_type: int | None = None,
 ) -> IamAirDevice:
     """Create a device model from binding-list data and its TSL."""
@@ -291,6 +293,7 @@ def parse_device(
         product_category=str(product_category or ""),
         product_type=str(product_type or ""),
         filter_max_runtimes=filter_max_runtimes,
+        filter_names=filter_names,
         properties=parse_tsl(tsl),
         iot_paas_type=iot_paas_type,
     )
@@ -349,3 +352,18 @@ def select_filter_max_runtimes(
         positive_int(matching.get("filterMaxRuntime")),
         positive_int(matching.get("filter2MaxRuntime")),
     )
+
+
+def select_app_filter_names(
+    detail: dict[str, Any],
+    maximum_runtimes: tuple[int | None, int | None],
+) -> tuple[str | None, str | None]:
+    """Return the filter titles rendered by the App's XDJ detail page."""
+    if str(detail.get("productCategory") or "") != "KX":
+        return (None, None)
+    first_maximum, second_maximum = maximum_runtimes
+    if second_maximum is not None:
+        return ("HEPA", "炭魔方")
+    if first_maximum is not None:
+        return ("滤网", None)
+    return (None, None)

@@ -145,20 +145,49 @@ model-internal properties. Those are not App device controls and are
 intentionally not exposed. In particular, forced unbinding is never surfaced
 as an entity. No write is attempted unless the live TSL reports write access.
 
+The KX TSL labels `WindSpeed=0` as `自动`, but the App's wind-gear widget
+renders only values `1` through `5` and sends `selected gear + 1`. Automatic
+operation is a separate `WorkMode=0` control. The standard HA fan therefore
+reports five speed steps; automatic operation remains available as a preset
+mode and in the explicit mode select.
+
 ### KX type-5 screen behavior
 
 The Android App treats the KX product type `5` screen as context-sensitive:
 
-- sleep mode forces the screen state off; requesting the screen also leaves
-  sleep mode;
-- smart trusteeship displays `T_Panel_Status` and blocks the ordinary screen
-  control until trusteeship is disabled;
+- sleep mode renders the screen off; requesting the screen sends the current
+  value as a toggle command and then leaves sleep mode;
+- smart trusteeship displays `T_Panel_Status`; its visible panel value is used
+  as the same toggle command;
 - outside sleep mode and smart trusteeship, the App displays `ScreenSwitch`.
   `T_Panel_Status` can disagree in that context and must not override it;
 - a powered-off device is always rendered as screen off.
 
-The Home Assistant switch mirrors those rules so its state and next available
-control action match the App.
+Unlike an ordinary boolean setter, the type-5 App sends the currently displayed
+value of `ScreenSwitch` when the user requests the opposite state. The device
+interprets that same-value write as a toggle command. Home Assistant mirrors
+that command behavior while optimistically displaying the requested target
+until cloud telemetry catches up. Its `app_action` attribute exposes the App's
+`亮屏`/`息屏` button text; this is the next action, not the current state.
+
+The App also rejects direct power, speed, work-mode, child-lock, ion,
+disinfection and timer actions while `Trusteeship=1`. The integration applies
+the same guard instead of sending a command that the App itself would block.
+
+### Smart-trusteeship picker ranges
+
+The App does not use every value advertised by the TSL for its trusteeship
+pickers:
+
+- `T_ON_HCHO` and `T_OFF_HCHO`: unset `0`, then `0.01` through `0.10` in
+  `0.01 mg/m³` steps;
+- `T_ON_PM25` and `T_OFF_PM25`: unset `0`, then `5` through `110` in
+  `5 μg/m³` steps;
+- automatic-run VOC: unset, `良`, `中`, `差`;
+- automatic-standby VOC: unset, `优`, `良`, `中`.
+
+The HA number/select metadata follows these App choices instead of exposing the
+wider raw TSL ranges.
 
 ### Filter lifetime percentage
 
@@ -172,3 +201,8 @@ remaining-life percentages. The App fetches `filterMaxRuntime` and
 The integration uses the same model-specific limits and clamps the result to
 0-100%. It does not substitute the generic TSL numeric maximum, because that
 can differ from the App's configured lifetime for a particular filter.
+
+For the XDJ dual-filter layout, the titles are static App resources:
+`HEPA` and `炭魔方`. They are not supplied by the TSL or `product/listInfo`.
+The integration applies those titles to the remaining-life sensors, raw
+runtime/status sensors and reset actions.

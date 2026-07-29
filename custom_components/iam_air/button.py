@@ -32,7 +32,7 @@ async def async_setup_entry(
                 device,
                 prop=prop,
                 raw_value=raw_value,
-                label=label,
+                label=_filter_reset_label(device, raw_value, label),
             )
             for raw_value, label in prop.enum_options.items()
         )
@@ -70,3 +70,16 @@ class IamAirFilterResetButton(IamAirEntity, ButtonEntity):
                 )
             },
         )
+
+
+def _filter_reset_label(
+    device: IamAirDevice,
+    raw_value: str,
+    fallback: str,
+) -> str:
+    """Use the App's filter title for its matching maintenance action."""
+    try:
+        filter_name = device.filter_names[int(raw_value) - 1]
+    except (IndexError, ValueError):
+        filter_name = None
+    return f"重置{filter_name}滤芯寿命" if filter_name else fallback

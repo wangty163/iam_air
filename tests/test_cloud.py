@@ -246,6 +246,7 @@ async def test_discovery_intersects_app_homepage_with_link_bindings(
     assert devices[0].product_category == "KX"
     assert devices[0].product_type == "5"
     assert devices[0].filter_max_runtimes == (3000, 9000)
+    assert devices[0].filter_names == ("HEPA", "炭魔方")
     assert devices[0].iot_paas_type == IOT_PAAS_TYPE_FOG
     assert detail_requests == ["fake-visible-device"]
     assert tsl_requests == ["fake-visible-device"]

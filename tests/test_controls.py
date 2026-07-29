@@ -7,8 +7,9 @@ from homeassistant.components.fan import FanEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.iam_air.button import IamAirFilterResetButton
+from custom_components.iam_air.entity import app_property_name
 from custom_components.iam_air.fan import IamAirFan
-from custom_components.iam_air.models import DeviceSnapshot, parse_device
+from custom_components.iam_air.models import DeviceSnapshot, TslProperty, parse_device
 from custom_components.iam_air.number import IamAirNumber
 from custom_components.iam_air.select import IamAirSelect
 from custom_components.iam_air.switch import IamAirSwitch
@@ -94,6 +95,7 @@ def make_device_and_coordinator():
         tsl,
         product_category="KX",
         product_type="5",
+        filter_names=("HEPA", "炭魔方"),
     )
     coordinator = MagicMock()
     coordinator.last_update_success = True
@@ -113,14 +115,14 @@ def make_device_and_coordinator():
     return device, coordinator
 
 
-async def test_fan_exposes_power_six_speeds_and_three_modes() -> None:
+async def test_fan_exposes_power_five_gears_and_three_modes() -> None:
     """The primary fan exposes the same core controls as the App."""
     device, coordinator = make_device_and_coordinator()
     fan = IamAirFan(coordinator, device)
 
     assert fan.is_on
-    assert fan.speed_count == 6
-    assert fan.percentage == 50
+    assert fan.speed_count == 5
+    assert fan.percentage == 40
     assert fan.preset_modes == ["自动", "手动", "睡眠"]
     assert fan.preset_mode == "手动"
     assert fan.supported_features & FanEntityFeature.TURN_ON
@@ -176,7 +178,7 @@ async def test_explicit_switch_and_select_controls_write_raw_values() -> None:
 
 
 async def test_kx_type_5_screen_turn_on_leaves_sleep_mode_first() -> None:
-    """The App exits sleep mode before a KX type-5 screen can stay lit."""
+    """The App sends the current screen value, then exits sleep mode."""
     device, coordinator = make_device_and_coordinator()
     screen = IamAirSwitch(
         coordinator,
@@ -198,16 +200,19 @@ async def test_kx_type_5_screen_turn_on_leaves_sleep_mode_first() -> None:
 
     assert coordinator.async_set_properties.await_args_list[0].args == (
         "fake-device-id",
-        {"WorkMode": 0},
+        {"ScreenSwitch": 0},
     )
+    assert coordinator.async_set_properties.await_args_list[0].kwargs == {
+        "optimistic_items": {"ScreenSwitch": 1}
+    }
     assert coordinator.async_set_properties.await_args_list[1].args == (
         "fake-device-id",
-        {"ScreenSwitch": 1},
+        {"WorkMode": 0},
     )
 
 
-async def test_kx_type_5_screen_uses_panel_state_and_blocks_trusteeship() -> None:
-    """Panel telemetry remains visible while trusteeship blocks direct commands."""
+async def test_kx_type_5_screen_uses_panel_state_during_trusteeship() -> None:
+    """The App toggles the visible panel state even during trusteeship."""
     device, coordinator = make_device_and_coordinator()
     screen = IamAirSwitch(
         coordinator,
@@ -225,9 +230,13 @@ async def test_kx_type_5_screen_uses_panel_state_and_blocks_trusteeship() -> Non
     )
 
     assert screen.is_on
-    with pytest.raises(HomeAssistantError, match="trusteeship"):
-        await screen.async_turn_off()
-    coordinator.async_set_properties.assert_not_awaited()
+    assert screen.extra_state_attributes == {"app_action": "息屏"}
+    await screen.async_turn_off()
+    coordinator.async_set_properties.assert_awaited_once_with(
+        "fake-device-id",
+        {"ScreenSwitch": 1},
+        optimistic_items={"ScreenSwitch": 0, "T_Panel_Status": 0},
+    )
 
 
 async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
@@ -252,7 +261,8 @@ async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
     await screen.async_turn_on()
     coordinator.async_set_properties.assert_awaited_once_with(
         "fake-device-id",
-        {"ScreenSwitch": 1},
+        {"ScreenSwitch": 0},
+        optimistic_items={"ScreenSwitch": 1},
     )
 
     coordinator.data[device.iot_id].properties.update(
@@ -262,6 +272,24 @@ async def test_kx_type_5_screen_matches_app_state_outside_trusteeship() -> None:
         }
     )
     assert screen.is_on
+
+
+async def test_app_blocks_main_controls_during_trusteeship() -> None:
+    """Power, speed and modes follow the App's smart-trusteeship guard."""
+    device, coordinator = make_device_and_coordinator()
+    coordinator.data[device.iot_id].properties["Trusteeship"] = 1
+    fan = IamAirFan(coordinator, device)
+    speed = IamAirSelect(
+        coordinator,
+        device,
+        device.properties["WindSpeed"],
+    )
+
+    with pytest.raises(HomeAssistantError, match="智能托管"):
+        await fan.async_turn_off()
+    with pytest.raises(HomeAssistantError, match="智能托管"):
+        await speed.async_select_option("最高档")
+    coordinator.async_set_properties.assert_not_awaited()
 
 
 async def test_timer_number_and_filter_reset_button() -> None:
@@ -297,3 +325,49 @@ async def test_timer_number_and_filter_reset_button() -> None:
         "fake-device-id",
         {"FilterReset": 1},
     )
+
+
+def test_app_entity_names_include_filter_titles_and_device_page_labels() -> None:
+    """HA entity names follow the visible XDJ page instead of raw TSL labels."""
+    device, _coordinator = make_device_and_coordinator()
+    assert app_property_name(device, device.properties["PowerSwitch"]) == "电源"
+    filter_runtime = TslProperty(
+        identifier="FilterRunTime_1",
+        name="滤芯使用时间",
+        access_mode="r",
+        data_type="int",
+    )
+    assert app_property_name(device, filter_runtime) == "HEPA累计使用时间"
+
+
+def test_trusteeship_controls_use_app_picker_ranges() -> None:
+    """HA offers the narrower threshold choices present in the App."""
+    device, coordinator = make_device_and_coordinator()
+    hcho = TslProperty(
+        identifier="T_ON_HCHO",
+        name="raw",
+        access_mode="rw",
+        data_type="double",
+        specs={"min": "0", "max": "0.2", "step": "0.02"},
+        unit="mg/m³",
+    )
+    voc = TslProperty(
+        identifier="T_ON_TVOCLevel",
+        name="raw",
+        access_mode="rw",
+        data_type="enum",
+        specs={"0": "不设置", "1": "优", "2": "良", "3": "中", "4": "差"},
+    )
+
+    hcho_number = IamAirNumber(
+        coordinator,
+        device,
+        prop=hcho,
+        default_unit=None,
+    )
+    voc_select = IamAirSelect(coordinator, device, voc)
+
+    assert hcho_number.native_min_value == 0
+    assert hcho_number.native_max_value == 0.1
+    assert hcho_number.native_step == 0.01
+    assert voc_select.options == ["不设置", "良", "中", "差"]

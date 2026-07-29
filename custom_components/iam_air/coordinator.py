@@ -112,7 +112,13 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
             raise UpdateFailed(f"Unable to update IAM Air devices: {error}") from error
         return snapshots
 
-    async def async_set_properties(self, iot_id: str, items: dict[str, object]) -> None:
+    async def async_set_properties(
+        self,
+        iot_id: str,
+        items: dict[str, object],
+        *,
+        optimistic_items: dict[str, object] | None = None,
+    ) -> None:
         """Write properties and request a fresh snapshot."""
         device = self.devices.get(iot_id)
         if device is None:
@@ -126,18 +132,19 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         except IamAirError as err:
             raise UpdateFailed(f"Unable to control IAM Air device: {err}") from err
 
+        visible_items = optimistic_items or items
         expires_at = time.monotonic() + CONTROL_STATE_GRACE_SECONDS
         pending = self._pending_properties.setdefault(iot_id, {})
         pending.update(
             {
                 identifier: _PendingProperty(value=value, expires_at=expires_at)
-                for identifier, value in items.items()
+                for identifier, value in visible_items.items()
             }
         )
         current = dict(self.data or {})
         previous = current.get(iot_id)
         optimistic = dict(previous.properties if previous else {})
-        optimistic.update(items)
+        optimistic.update(visible_items)
         current[iot_id] = DeviceSnapshot(
             properties=optimistic,
             available=previous.available if previous else True,
