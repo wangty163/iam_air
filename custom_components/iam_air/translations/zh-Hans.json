@@ -3,27 +3,24 @@
     "step": {
       "user": {
         "title": "连接 IAM 空气净化器",
-        "description": "凭证只会发送到 IAM 与阿里云生活物联网官方服务，并由 Home Assistant 保存在本地。本公开集成不内置任何 App 凭证。",
+        "description": "IAM Air 从仅属主可读的 /config/iam_air/credentials.json 读取 Link Living AppKey/AppSecret。",
         "data": {
           "username": "IAM 账号手机号",
-          "password": "IAM 账号密码",
-          "app_key": "已授权的 Link Living AppKey",
-          "app_secret": "已授权的 Link Living AppSecret"
+          "password": "IAM 账号密码"
         }
       },
       "reauth_confirm": {
         "title": "重新连接 IAM 空气净化器",
-        "description": "请输入当前 IAM 账号和已授权的 Link Living 凭证。",
+        "description": "请输入当前 IAM 账号和密码。",
         "data": {
           "username": "IAM 账号手机号",
-          "password": "IAM 账号密码",
-          "app_key": "已授权的 Link Living AppKey",
-          "app_secret": "已授权的 Link Living AppSecret"
+          "password": "IAM 账号密码"
         }
       }
     },
     "error": {
       "cannot_connect": "无法连接 IAM 云服务",
+      "invalid_credentials": "Link Living 私有凭据文件缺失、格式错误，或权限不是仅属主可读",
       "invalid_auth": "身份验证失败",
       "no_devices": "没有发现已绑定的空气净化器",
       "unknown": "发生未知错误"

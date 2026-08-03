@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,11 +15,12 @@ from homeassistant.const import (
     CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     PERCENTAGE,
     UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
-from .entity import IamAirEntity
+from .entity import IamAirEntity, add_iam_entities, app_property_name
 from .models import IamAirDevice, TslProperty
 
 
@@ -39,10 +41,10 @@ SENSOR_SPECS = (
         default_unit=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     ),
     IamSensorSpec(aliases=("HCHO", "hcho", "formaldehyde")),
-    IamSensorSpec(aliases=("HCHOLevel", "hchoLevel")),
+    IamSensorSpec(aliases=("HCHOLevel", "hchoLevel"), state_class=None),
     IamSensorSpec(aliases=("TVOC", "tvoc")),
-    IamSensorSpec(aliases=("TVOCLevel", "tvocLevel")),
-    IamSensorSpec(aliases=("PM25Level", "pm25Level")),
+    IamSensorSpec(aliases=("TVOCLevel", "tvocLevel"), state_class=None),
+    IamSensorSpec(aliases=("PM25Level", "pm25Level"), state_class=None),
     IamSensorSpec(
         aliases=("CuTemperature", "CurrentTemperature", "currentTemp"),
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -54,16 +56,39 @@ SENSOR_SPECS = (
         default_unit=PERCENTAGE,
     ),
     IamSensorSpec(
-        aliases=("filterStatusOne", "FilterStatus", "filterStatus"),
-        default_unit=PERCENTAGE,
+        aliases=("FilterRunTime_1", "filterRunTime_1"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
     ),
     IamSensorSpec(
-        aliases=("filterStatusTwo", "FilterStatus_2"),
-        default_unit=PERCENTAGE,
+        aliases=("FilterRunTime_2", "filterRunTime_2"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
     ),
     IamSensorSpec(
-        aliases=("filterStatusThree", "FilterStatus_3"),
-        default_unit=PERCENTAGE,
+        aliases=("Runtime_1", "runtime_1"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    IamSensorSpec(
+        aliases=("FilterStatus_1", "filterStatusOne", "FilterStatus"),
+        state_class=None,
+    ),
+    IamSensorSpec(
+        aliases=("FilterStatus_2", "filterStatusTwo"),
+        state_class=None,
+    ),
+    IamSensorSpec(
+        aliases=("FilterStatus_3", "filterStatusThree"),
+        state_class=None,
+    ),
+    IamSensorSpec(
+        aliases=("TimingRemain", "timingRemain"),
+        device_class=SensorDeviceClass.DURATION,
+        default_unit=UnitOfTime.MINUTES,
     ),
     IamSensorSpec(
         aliases=("airQualityGrade", "airQuality"),
@@ -73,6 +98,11 @@ SENSOR_SPECS = (
         aliases=("errorCode", "ErrorCode"),
         state_class=None,
     ),
+)
+
+FILTER_RUNTIME_ALIASES = (
+    ("FilterRunTime_1", "filterRunTime_1"),
+    ("FilterRunTime_2", "filterRunTime_2"),
 )
 
 
@@ -92,7 +122,28 @@ async def async_setup_entry(
                 continue
             seen.add(prop.identifier)
             entities.append(IamAirSensor(coordinator, device, prop=prop, spec=spec))
-    async_add_entities(entities)
+        for index, (aliases, maximum) in enumerate(
+            zip(
+                FILTER_RUNTIME_ALIASES,
+                device.filter_max_runtimes,
+                strict=True,
+            ),
+            start=1,
+        ):
+            prop = device.find_property(*aliases)
+            if prop is None or not prop.readable or maximum is None:
+                continue
+            entities.append(
+                IamAirFilterLifeSensor(
+                    coordinator,
+                    device,
+                    prop=prop,
+                    filter_index=index,
+                    filter_name=device.filter_names[index - 1],
+                    maximum_runtime=maximum,
+                )
+            )
+    add_iam_entities(entry, async_add_entities, entities)
 
 
 class IamAirSensor(IamAirEntity, SensorEntity):
@@ -112,7 +163,7 @@ class IamAirSensor(IamAirEntity, SensorEntity):
             unique_suffix=prop.identifier.lower(),
         )
         self._property = prop
-        self._attr_name = prop.name
+        self._attr_name = app_property_name(device, prop)
         self._attr_device_class = spec.device_class
         self._attr_native_unit_of_measurement = normalize_unit(
             prop.unit or spec.default_unit
@@ -122,7 +173,61 @@ class IamAirSensor(IamAirEntity, SensorEntity):
     @property
     def native_value(self) -> Any:
         """Return the latest property value."""
-        return self.value(self._property.identifier)
+        value = self.property_value(self._property.identifier)
+        if value is None:
+            return None
+        return self._property.option_for_value(value) or value
+
+
+class IamAirFilterLifeSensor(IamAirEntity, SensorEntity):
+    """Remaining filter lifetime calculated with the App's model limit."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: Any,
+        device: IamAirDevice,
+        *,
+        prop: TslProperty,
+        filter_index: int,
+        filter_name: str | None,
+        maximum_runtime: int,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            device,
+            unique_suffix=f"filter_life_{filter_index}",
+        )
+        self._property = prop
+        self._maximum_runtime = maximum_runtime
+        self._attr_name = (
+            f"{filter_name}滤芯寿命"
+            if filter_name
+            else f"滤芯{filter_index}寿命"
+        )
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the App-equivalent remaining lifetime percentage."""
+        return filter_life_percentage(
+            self.property_value(self._property.identifier),
+            self._maximum_runtime,
+        )
+
+
+def filter_life_percentage(used_runtime: Any, maximum_runtime: Any) -> int | None:
+    """Calculate App-equivalent remaining filter lifetime, clamped to 0-100."""
+    try:
+        used = float(used_runtime)
+        maximum = float(maximum_runtime)
+    except (TypeError, ValueError):
+        return None
+    if maximum <= 0:
+        return None
+    remaining = (maximum - used) / maximum * 100
+    return min(100, max(0, math.floor(remaining + 0.5)))
 
 
 def normalize_unit(unit: str | None) -> str | None:

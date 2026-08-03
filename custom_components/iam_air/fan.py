@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
@@ -13,7 +14,7 @@ from .const import (
     POWER_PROPERTY_ALIASES,
     SPEED_PROPERTY_ALIASES,
 )
-from .entity import IamAirEntity
+from .entity import IamAirEntity, add_iam_entities
 from .models import (
     IamAirDevice,
     percentage_for_property,
@@ -29,8 +30,13 @@ async def async_setup_entry(
 ) -> None:
     """Set up purifier fan entities."""
     coordinator = entry.runtime_data.coordinator
-    async_add_entities(
-        IamAirFan(coordinator, device) for device in coordinator.devices.values()
+    add_iam_entities(
+        entry,
+        async_add_entities,
+        [
+            IamAirFan(coordinator, device)
+            for device in coordinator.devices.values()
+        ],
     )
 
 
@@ -46,6 +52,8 @@ class IamAirFan(IamAirEntity, FanEntity):
         self._mode = device.find_property(*MODE_PROPERTY_ALIASES)
 
         features = FanEntityFeature(0)
+        if self._power and self._power.writable:
+            features |= FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
         if self._speed and self._speed.writable:
             features |= FanEntityFeature.SET_SPEED
         if self._mode and self._mode.writable and self._mode.enum_options:
@@ -57,16 +65,22 @@ class IamAirFan(IamAirEntity, FanEntity):
         """Return the purifier power state."""
         if self._power is None:
             return None
-        return value_as_bool(self.value(self._power.identifier))
+        return value_as_bool(self.property_value(self._power.identifier))
 
     @property
     def percentage(self) -> int | None:
         """Return current fan speed as a Home Assistant percentage."""
         if self._speed is None:
             return None
-        raw = self.value(self._speed.identifier)
+        raw = self.property_value(self._speed.identifier)
         if raw is None:
             return None
+        if app_values := self._app_manual_speed_values:
+            try:
+                index = app_values.index(str(raw))
+            except ValueError:
+                return None
+            return round((index + 1) * 100 / len(app_values))
         return percentage_for_property(self._speed, raw)
 
     @property
@@ -74,6 +88,8 @@ class IamAirFan(IamAirEntity, FanEntity):
         """Return the number of distinct speed steps."""
         if self._speed is None:
             return 0
+        if app_values := self._app_manual_speed_values:
+            return len(app_values)
         if numeric_range := self._speed.numeric_range:
             minimum, maximum, step = numeric_range
             return max(1, round((maximum - minimum) / step) + 1)
@@ -91,7 +107,9 @@ class IamAirFan(IamAirEntity, FanEntity):
         """Return the active mode label."""
         if not self._mode:
             return None
-        return self._mode.option_for_value(self.value(self._mode.identifier))
+        return self._mode.option_for_value(
+            self.property_value(self._mode.identifier)
+        )
 
     async def async_turn_on(
         self,
@@ -100,6 +118,7 @@ class IamAirFan(IamAirEntity, FanEntity):
         **_kwargs: Any,
     ) -> None:
         """Turn on the purifier and optionally set speed or mode."""
+        self.ensure_app_control_allowed(require_power=False)
         items: dict[str, Any] = {}
         if self._power:
             items[self._power.identifier] = self._power.coerce_value(1)
@@ -114,6 +133,7 @@ class IamAirFan(IamAirEntity, FanEntity):
 
     async def async_turn_off(self, **_kwargs: Any) -> None:
         """Turn off the purifier."""
+        self.ensure_app_control_allowed(require_power=False)
         if self._power:
             await self.coordinator.async_set_properties(
                 self.device.iot_id,
@@ -125,6 +145,7 @@ class IamAirFan(IamAirEntity, FanEntity):
         if percentage <= 0:
             await self.async_turn_off()
             return
+        self.ensure_app_control_allowed(require_power=True)
         if not self._speed:
             return
         items = {self._speed.identifier: self._raw_speed(percentage)}
@@ -134,6 +155,7 @@ class IamAirFan(IamAirEntity, FanEntity):
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set a TSL-defined purifier mode."""
+        self.ensure_app_control_allowed(require_power=True)
         if not self._mode:
             return
         raw = self._mode.value_for_option(preset_mode)
@@ -150,4 +172,25 @@ class IamAirFan(IamAirEntity, FanEntity):
         speed = self._speed
         if speed is None:
             return None
+        if app_values := self._app_manual_speed_values:
+            index = min(
+                len(app_values) - 1,
+                max(0, math.ceil(percentage * len(app_values) / 100) - 1),
+            )
+            return speed.coerce_value(app_values[index])
         return value_for_percentage(speed, percentage)
+
+    @property
+    def _app_manual_speed_values(self) -> list[str] | None:
+        """Return the five XDJ gear values, excluding its separate auto mode."""
+        speed = self._speed
+        if (
+            speed is None
+            or self.device.product_category != "KX"
+            or speed.identifier.casefold() != "windspeed"
+        ):
+            return None
+        values = list(speed.enum_options)
+        if len(values) > 1 and values[0] == "0":
+            return values[1:]
+        return None

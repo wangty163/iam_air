@@ -8,15 +8,19 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import IamAirConfigEntry
-from .entity import IamAirEntity
+from .const import POWER_PROPERTY_ALIASES
+from .entity import IamAirEntity, add_iam_entities, app_property_name
 from .models import IamAirDevice, TslProperty, value_as_bool
 
 SWITCH_ALIASES = (
-    ("childLockOnOff", "childLock", "ChildLock"),
-    ("uvSterilization", "UVSwitch", "uvSwitch"),
+    POWER_PROPERTY_ALIASES,
+    ("ChildLockSwitch", "childLockOnOff", "childLock", "ChildLock"),
+    ("DisinfectSwitch", "disinfectSwitch", "disinfection", "Disinfection"),
     ("IonsSwitch", "ionsSwitch", "negativeIon"),
-    ("disinfection", "Disinfection"),
-    ("TrustSwitch", "trustSwitch"),
+    ("ScreenSwitch", "screenSwitch"),
+    ("Trusteeship", "TrustSwitch", "trustSwitch"),
+    ("T_DisinfectSwitch",),
+    ("T_IonsSwitch",),
 )
 
 
@@ -41,7 +45,7 @@ async def async_setup_entry(
                 continue
             seen.add(prop.identifier)
             entities.append(IamAirSwitch(coordinator, device, prop))
-    async_add_entities(entities)
+    add_iam_entities(entry, async_add_entities, entities)
 
 
 class IamAirSwitch(IamAirEntity, SwitchEntity):
@@ -59,15 +63,42 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
             unique_suffix=prop.identifier.lower(),
         )
         self._property = prop
-        self._attr_name = prop.name
+        self._attr_name = app_property_name(device, prop)
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return the current switch state."""
-        return value_as_bool(self.value(self._property.identifier))
+        if self._is_special_screen_switch:
+            power = self.property_value("PowerSwitch")
+            if power is not None and not value_as_bool(power):
+                return False
+            work_mode = self.property_value("WorkMode")
+            if work_mode in (2, "2"):
+                return False
+            panel_status = self.property_value("T_Panel_Status")
+            trusteeship = self.property_value("Trusteeship")
+            if (
+                trusteeship is not None
+                and value_as_bool(trusteeship)
+                and panel_status is not None
+            ):
+                return value_as_bool(panel_status)
+            value = self.property_value(self._property.identifier)
+            if value is not None:
+                return not value_as_bool(value)
+            if panel_status is not None:
+                return value_as_bool(panel_status)
+        value = self.property_value(self._property.identifier)
+        if value is None:
+            return None
+        return value_as_bool(value)
 
     async def async_turn_on(self, **_kwargs: Any) -> None:
         """Enable the property."""
+        if self._is_special_screen_switch:
+            await self._async_set_special_screen(True)
+            return
+        self._ensure_control_allowed(turn_on=True)
         await self.coordinator.async_set_properties(
             self.device.iot_id,
             {self._property.identifier: self._property.coerce_value(1)},
@@ -75,7 +106,72 @@ class IamAirSwitch(IamAirEntity, SwitchEntity):
 
     async def async_turn_off(self, **_kwargs: Any) -> None:
         """Disable the property."""
+        if self._is_special_screen_switch:
+            await self._async_set_special_screen(False)
+            return
+        self._ensure_control_allowed(turn_on=False)
         await self.coordinator.async_set_properties(
             self.device.iot_id,
             {self._property.identifier: self._property.coerce_value(0)},
+        )
+
+    @property
+    def _is_special_screen_switch(self) -> bool:
+        return (
+            self._property.identifier.casefold() == "screenswitch"
+            and self.device.uses_kx_type_5_screen_behavior
+        )
+
+    async def _async_set_special_screen(self, turn_on: bool) -> None:
+        """Send the current KX type-5 screen value as the App's toggle command."""
+        self.ensure_app_control_allowed(
+            require_power=True,
+            allow_during_trusteeship=True,
+        )
+        current_state = self.is_on
+        if current_state is None or current_state == turn_on:
+            return
+        current_command = 1 if current_state else 0
+        optimistic_items: dict[str, object] = {
+            self._property.identifier: self._property.coerce_value(
+                current_command
+            ),
+            "T_Panel_Status": 1 if turn_on else 0,
+        }
+        await self.coordinator.async_set_properties(
+            self.device.iot_id,
+            {
+                self._property.identifier: self._property.coerce_value(
+                    current_command
+                )
+            },
+            optimistic_items=optimistic_items,
+        )
+        work_mode = self.property_value("WorkMode")
+        if turn_on and work_mode in (2, "2"):
+            await self.coordinator.async_set_properties(
+                self.device.iot_id,
+                {"WorkMode": 0},
+            )
+    @property
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        """Expose the App's action label without confusing it with state."""
+        if not self._is_special_screen_switch or self.is_on is None:
+            return None
+        return {"app_action": "息屏" if self.is_on else "亮屏"}
+
+    def _ensure_control_allowed(self, *, turn_on: bool) -> None:
+        identifier = self._property.identifier.casefold()
+        if identifier in {"trusteeship", "trustswitch"}:
+            self.ensure_trusteeship_control_allowed(turn_on=turn_on)
+            return
+        if identifier in {"t_disinfectswitch", "t_ionsswitch"}:
+            return
+        self.ensure_app_control_allowed(
+            require_power=identifier not in {
+                "powerswitch",
+                "powerstate",
+                "power",
+            },
+            allow_during_trusteeship=identifier == "screenswitch",
         )

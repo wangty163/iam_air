@@ -34,7 +34,7 @@ App credentials are runtime configuration and are never part of source control.
 | `/uc/listBindingByAccount` | `1.0.8` | Discover bound devices |
 | `/thing/tsl/get` | `1.0.4` | Fetch the device TSL |
 | `/thing/properties/get` | `1.0.4` | Read property snapshot |
-| `/thing/properties/set` | `1.0.5` | Write properties |
+| `/thing/properties/set` | `1.0.2` | Write properties |
 | `/account/checkOrRefreshSession` | `1.0.4` | Refresh IoT session |
 
 References:
