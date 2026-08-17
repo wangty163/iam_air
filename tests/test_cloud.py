@@ -18,6 +18,7 @@ from custom_components.iam_air.cloud import (
     parse_iot_session_response,
     validate_oa_host,
 )
+from custom_components.iam_air.const import IOT_PAAS_TYPE_FOG
 
 
 def test_gateway_signature_is_deterministic_and_secret_is_not_transmitted() -> None:
@@ -113,6 +114,113 @@ def test_parse_iot_session() -> None:
     assert "fake-iot-token" not in repr(session)
     assert "fake-refresh-token" not in repr(session)
     assert "fake-identity" not in repr(session)
+
+
+@pytest.mark.asyncio
+async def test_get_device_online_states_uses_each_devices_app_route() -> None:
+    """FOG homepage state cannot be overridden by its binding-list status."""
+    client = IamCloudClient.__new__(IamCloudClient)
+
+    async def list_app_devices() -> list[dict[str, object]]:
+        return [
+            {"iotId": "fog-online-off", "powerStatus": 1},
+            {"iotId": "fog-online-on", "powerStatus": 2},
+            {"iotId": "fog-offline", "powerStatus": 0},
+            {"iotId": "fog-unknown", "powerStatus": 9},
+            {"iotId": "other-fog", "powerStatus": 0},
+        ]
+
+    async def list_devices() -> list[dict[str, object]]:
+        return [
+            {"iotId": "fog-online-off", "status": 3},
+            {"iotId": "fog-online-on", "status": 3},
+            {"iotId": "fog-offline", "status": 3},
+            {"iotId": "link-online", "status": 1},
+            {"iotId": "link-offline", "status": "3"},
+            {"iotId": "link-unknown", "status": 2},
+            {"iotId": "other-link", "status": 1},
+        ]
+
+    client.async_list_app_devices = list_app_devices
+    client.async_list_devices = list_devices
+
+    assert await client.async_get_device_online_states(
+        {
+            "fog-online-off": IOT_PAAS_TYPE_FOG,
+            "fog-online-on": IOT_PAAS_TYPE_FOG,
+            "fog-offline": IOT_PAAS_TYPE_FOG,
+            "fog-unknown": IOT_PAAS_TYPE_FOG,
+            "link-online": 0,
+            "link-offline": 0,
+            "link-unknown": 0,
+        }
+    ) == {
+        "fog-online-off": True,
+        "fog-online-on": True,
+        "fog-offline": False,
+        "link-online": True,
+        "link-offline": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_discovery_uses_fog_homepage_state_instead_of_binding_state() -> None:
+    """A FOG purifier that is online but off starts as online."""
+    client = IamCloudClient.__new__(IamCloudClient)
+
+    async def list_app_devices() -> list[dict[str, object]]:
+        return [
+            {
+                "iotId": "fog-purifier",
+                "iotPaasType": IOT_PAAS_TYPE_FOG,
+                "powerStatus": 1,
+                "productName": "Test purifier",
+            }
+        ]
+
+    async def list_devices() -> list[dict[str, object]]:
+        return [
+            {
+                "iotId": "fog-purifier",
+                "status": 3,
+                "productKey": "test-product",
+                "deviceName": "test-device",
+            }
+        ]
+
+    async def list_product_configs() -> list[dict[str, object]]:
+        return []
+
+    async def get_detail(_iot_id: str) -> dict[str, object]:
+        return {"productCategory": "KX", "productType": "5"}
+
+    async def get_tsl(_iot_id: str) -> dict[str, object]:
+        return {
+            "properties": [
+                {
+                    "identifier": "PowerSwitch",
+                    "accessMode": "rw",
+                    "dataType": {"type": "bool"},
+                },
+                {
+                    "identifier": "PM25",
+                    "accessMode": "r",
+                    "dataType": {"type": "int"},
+                },
+            ]
+        }
+
+    client.async_list_app_devices = list_app_devices
+    client.async_list_devices = list_devices
+    client.async_list_app_product_configs = list_product_configs
+    client.async_get_app_device_detail = get_detail
+    client.async_get_tsl = get_tsl
+
+    devices = await client.async_discover_air_devices()
+
+    assert len(devices) == 1
+    assert devices[0].online is True
+    assert devices[0].iot_paas_type == IOT_PAAS_TYPE_FOG
 
 
 @pytest.mark.parametrize(

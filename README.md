@@ -16,6 +16,10 @@
 - `sensor`：PM2.5、甲醛、TVOC、温度、湿度、滤芯状态、空气质量等级。
 - `switch`：童锁、UV、负离子、消毒等；只为 TSL 标记为可读写的属性创建。
 - 优先使用与 App 相同的账号级 MQTT 推送；推送不可用时仍保留 REST 轮询。
+- 按设备实际通道刷新在线状态：FOG 设备使用 App 首页三态及 MQTT
+  `status` 事件，Link Living 设备使用绑定列表状态。
+- 设备离线时其控制和属性实体进入 `unavailable`；在线关机仍保持可用且电源为
+  `off`，并提供独立“连接状态”二进制传感器供自动化使用。
 - MQTT 凭据被拒绝后自动丢弃旧客户端、重新申请凭据并进行有界退避，避免
   使用过期 JWT 无限重连。
 
@@ -76,6 +80,9 @@
 4. 使用 `/thing/tsl/get` 读取设备物模型。
 5. 按设备通道使用 FOG 或 Link Living API 读取及控制设备。
 6. 建立账号级 MQTT 推送；连接异常期间继续用 REST 兜底。
+7. FOG 设备从 App 首页 `powerStatus` 与 MQTT `status` 获取在线状态；
+   Link Living 设备才使用绑定列表 `status`。
+8. `PowerSwitch` 仅表示开关机，不参与离线推断。
 
 协议边界和已确认字段见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
