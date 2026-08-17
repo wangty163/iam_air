@@ -6,6 +6,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "iam_air"
 PLATFORMS = (
+    Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.FAN,
     Platform.NUMBER,
@@ -41,6 +42,7 @@ HTTP_TIMEOUT_SECONDS = 15
 IAM_PROTOCOL_VERSION = "1.0.0"
 IAM_HOMEPAGE_PROTOCOL_VERSION = "3.1.0"
 IAM_APP_VERSION = "3.4.3"
+DEVICE_STATUS_SCAN_INTERVAL_SECONDS = 15
 SESSION_ERROR_CODES = frozenset((401, 403, 460, 29003))
 MOBILE_AUTH_API_VERSION = "1.0.0"
 MOBILE_AUTH_PATH = "/app/aepauth/handle"

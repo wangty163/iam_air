@@ -6,6 +6,7 @@ from custom_components.iam_air.const import FOG_MQTT_RETRY_MAX_SECONDS
 from custom_components.iam_air.mqtt import (
     IamAirFogMqttPushClient,
     fog_mqtt_retry_delay,
+    parse_fog_status_push,
 )
 
 
@@ -44,6 +45,7 @@ def test_rejected_fog_credentials_discard_client_and_schedule_cleanup() -> None:
         hass,
         cloud=Mock(),
         on_properties=Mock(),
+        on_status=Mock(),
         on_connection=on_connection,
     )
     mqtt_client = Mock()
@@ -68,6 +70,7 @@ def test_stale_rejected_client_cannot_replace_current_client() -> None:
         hass,
         cloud=Mock(),
         on_properties=Mock(),
+        on_status=Mock(),
         on_connection=Mock(),
     )
     current_client = Mock()
@@ -77,3 +80,30 @@ def test_stale_rejected_client_cannot_replace_current_client() -> None:
 
     assert push_client._mqtt is current_client
     assert push_client._credential_failures == 0
+
+
+def test_fog_status_push_parses_explicit_connectivity_events() -> None:
+    online = parse_fog_status_push(
+        b'{"deviceId":"fake-device","data":{"status":"online"}}'
+    )
+    offline = parse_fog_status_push(
+        b'{"deviceId":"fake-device","data":{"status":"offline"}}'
+    )
+
+    assert online is not None
+    assert online.iot_id == "fake-device"
+    assert online.online is True
+    assert offline is not None
+    assert offline.iot_id == "fake-device"
+    assert offline.online is False
+
+
+def test_fog_status_push_rejects_ambiguous_or_malformed_payloads() -> None:
+    assert parse_fog_status_push(b"not-json") is None
+    assert parse_fog_status_push(b'{"data":{"status":"online"}}') is None
+    assert (
+        parse_fog_status_push(
+            b'{"deviceId":"fake-device","data":{"status":"unknown"}}'
+        )
+        is None
+    )

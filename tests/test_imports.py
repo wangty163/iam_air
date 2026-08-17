@@ -9,6 +9,7 @@ import pytest
     "module",
     (
         "custom_components.iam_air",
+        "custom_components.iam_air.binary_sensor",
         "custom_components.iam_air.button",
         "custom_components.iam_air.cloud",
         "custom_components.iam_air.config_flow",

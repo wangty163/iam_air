@@ -180,6 +180,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IamAirConfigEntry) -> bo
                 hass,
                 cloud=client,
                 on_properties=coordinator.async_apply_property_push,
+                on_status=coordinator.async_apply_device_status,
                 on_connection=coordinator.async_set_push_connected,
             )
         )

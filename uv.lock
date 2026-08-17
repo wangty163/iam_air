@@ -1056,7 +1056,7 @@ wheels = [
 
 [[package]]
 name = "iam-air"
-version = "0.4.1"
+version = "0.5.2"
 source = { virtual = "." }
 
 [package.dev-dependencies]

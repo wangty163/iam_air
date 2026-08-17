@@ -2,7 +2,9 @@
 
 from custom_components.iam_air.models import (
     TslProperty,
+    parse_app_power_status,
     parse_device,
+    parse_device_online,
     parse_tsl,
     percentage_for_property,
     value_as_bool,
@@ -120,3 +122,22 @@ def test_parse_nested_json_string_tsl() -> None:
     parsed = parse_tsl({"data": json.dumps(TSL)})
 
     assert "powerstate" in parsed
+
+
+def test_parse_device_online_is_strict_and_tri_state() -> None:
+    """Only documented Link Living status values decide connectivity."""
+    assert parse_device_online(1) is True
+    assert parse_device_online("online") is True
+    assert parse_device_online(0) is False
+    assert parse_device_online("8") is False
+    assert parse_device_online(2) is None
+    assert parse_device_online("unexpected") is None
+
+
+def test_parse_app_power_status_does_not_treat_booleans_as_device_state() -> None:
+    """FOG App power status keeps unknown values distinct from offline."""
+    assert parse_app_power_status(0) is False
+    assert parse_app_power_status("1") is True
+    assert parse_app_power_status(2) is True
+    assert parse_app_power_status(True) is None
+    assert parse_app_power_status("unexpected") is None

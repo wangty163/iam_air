@@ -20,12 +20,13 @@ from .cloud import IamAirAuthError, IamAirError, IamCloudClient
 from .const import (
     CONTROL_STATE_GRACE_SECONDS,
     DEFAULT_SCAN_INTERVAL_SECONDS,
+    DEVICE_STATUS_SCAN_INTERVAL_SECONDS,
     DOMAIN,
     FOG_SCAN_INTERVAL_SECONDS,
     IOT_PAAS_TYPE_FOG,
 )
 from .models import DeviceSnapshot, IamAirDevice
-from .mqtt import MqttPropertyPush
+from .mqtt import MqttDeviceStatus, MqttPropertyPush
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,30 +92,66 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         )
         self.client = client
         self.devices = {device.iot_id: device for device in devices}
+        self._device_online = {
+            device.iot_id: device.online
+            for device in devices
+            if device.online is not None
+        }
+        self._next_device_status_refresh = 0.0
         self._pending_properties: dict[str, dict[str, _PendingProperty]] = {}
         self._pushed_properties: dict[str, dict[str, _PushedProperty]] = {}
         self._push_connected = False
 
     async def _async_update_data(self) -> dict[str, DeviceSnapshot]:
-        results = await asyncio.gather(
-            *(
-                self.client.async_get_properties(
-                    iot_id,
-                    iot_paas_type=device.iot_paas_type,
+        now = time.monotonic()
+        refresh_device_status = now >= self._next_device_status_refresh
+        requests = [
+            self.client.async_get_properties(
+                iot_id,
+                iot_paas_type=device.iot_paas_type,
+            )
+            for iot_id, device in self.devices.items()
+        ]
+        if refresh_device_status:
+            requests.append(
+                self.client.async_get_device_online_states(
+                    {
+                        iot_id: device.iot_paas_type
+                        for iot_id, device in self.devices.items()
+                    }
                 )
-                for iot_id, device in self.devices.items()
-            ),
-            return_exceptions=True,
+            )
+        results = list(
+            await asyncio.gather(
+                *requests,
+                return_exceptions=True,
+            )
         )
+        if refresh_device_status:
+            self._next_device_status_refresh = (
+                time.monotonic() + DEVICE_STATUS_SCAN_INTERVAL_SECONDS
+            )
+            status_result = results.pop()
+            if isinstance(status_result, Exception):
+                _LOGGER.debug(
+                    "Unable to refresh IAM Air device online states: %s",
+                    status_result,
+                )
+            else:
+                self._apply_device_online_states(status_result)
+
         snapshots: dict[str, DeviceSnapshot] = {}
         failures: list[Exception] = []
         for iot_id, result in zip(self.devices, results, strict=True):
+            device_online = self._device_online.get(iot_id)
             if isinstance(result, Exception):
-                failures.append(result)
+                if isinstance(result, IamAirAuthError) or device_online is not False:
+                    failures.append(result)
                 previous = (self.data or {}).get(iot_id)
                 snapshots[iot_id] = DeviceSnapshot(
                     properties=previous.properties if previous else {},
                     available=False,
+                    online=device_online,
                 )
             else:
                 pending = self._pending_properties.get(iot_id, {})
@@ -137,7 +174,11 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                     )
                 if not pending:
                     self._pending_properties.pop(iot_id, None)
-                snapshots[iot_id] = DeviceSnapshot(properties=properties)
+                snapshots[iot_id] = DeviceSnapshot(
+                    properties=properties,
+                    available=device_online is not False,
+                    online=device_online,
+                )
 
         if failures and len(failures) == len(self.devices):
             error = failures[0]
@@ -147,6 +188,21 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                 ) from error
             raise UpdateFailed(f"Unable to update IAM Air devices: {error}") from error
         return snapshots
+
+    def _apply_device_online_states(self, states: dict[str, bool]) -> None:
+        """Apply authoritative App-route states and log device transitions."""
+        for iot_id, online in states.items():
+            device = self.devices.get(iot_id)
+            if device is None:
+                continue
+            previous = self._device_online.get(iot_id)
+            self._device_online[iot_id] = online
+            if previous is not None and previous != online:
+                _LOGGER.info(
+                    "IAM Air device %s is now %s",
+                    device.name,
+                    "online" if online else "offline",
+                )
 
     async def async_set_properties(
         self,
@@ -189,6 +245,9 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         current[iot_id] = DeviceSnapshot(
             properties=optimistic,
             available=previous.available if previous else True,
+            online=(
+                previous.online if previous else self._device_online.get(iot_id)
+            ),
         )
         self.async_set_updated_data(current)
         await self.async_request_refresh()
@@ -212,6 +271,10 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         if not accepted:
             return
 
+        device = self.devices[push.iot_id]
+        if device.iot_paas_type != IOT_PAAS_TYPE_FOG:
+            self._apply_device_online_states({push.iot_id: True})
+        device_online = self._device_online.get(push.iot_id)
         self._push_connected = True
         pending = self._pending_properties.get(push.iot_id, {})
         for identifier in accepted:
@@ -225,7 +288,23 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         properties.update(accepted)
         current[push.iot_id] = DeviceSnapshot(
             properties=properties,
-            available=True,
+            available=device_online is not False,
+            online=device_online,
+        )
+        self.async_set_updated_data(current)
+
+    @callback
+    def async_apply_device_status(self, status: MqttDeviceStatus) -> None:
+        """Apply an explicit FOG device connectivity event."""
+        if status.iot_id not in self.devices:
+            return
+        self._apply_device_online_states({status.iot_id: status.online})
+        current = dict(self.data or {})
+        previous = current.get(status.iot_id)
+        current[status.iot_id] = DeviceSnapshot(
+            properties=previous.properties if previous else {},
+            available=status.online,
+            online=status.online,
         )
         self.async_set_updated_data(current)
 

@@ -29,5 +29,12 @@
       "already_configured": "该 IAM 账号已配置",
       "reauth_successful": "IAM Air 已重新验证"
     }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connectivity": {
+        "name": "连接状态"
+      }
+    }
   }
 }
