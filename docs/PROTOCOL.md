@@ -37,6 +37,26 @@ App credentials are runtime configuration and are never part of source control.
 | `/thing/properties/set` | `1.0.2` | Write properties |
 | `/account/checkOrRefreshSession` | `1.0.4` | Refresh IoT session |
 
+Availability is channel-specific and must not be inferred from a power
+property or a cached property response.
+
+For Link Living devices, the binding-list `status` field is the device-level
+availability source. Its values are `0` (inactive), `1` (online), `3`
+(offline), and `8` (disabled).
+
+For FOG devices (`iotPaasType=1`), the IAM App uses two explicit sources:
+
+- `index/homepage` exposes `powerStatus=0` for offline,
+  `powerStatus=1` for online and powered off, and `powerStatus=2` for online
+  and powered on.
+- The account MQTT wildcard contains a `status` leaf topic. Its
+  `data.status` is exactly `online` or `offline`.
+
+The FOG `devdata` leaf topic carries property snapshots. Its `PowerSwitch`
+value is only the purifier's power state: `0` is powered off and `1` is
+powered on. It is never an availability signal. Unknown or malformed status
+values do not change the previous connectivity state.
+
 References:
 
 - [Alibaba user service](https://help.aliyun.com/zh/document_detail/129778.html)

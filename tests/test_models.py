@@ -64,6 +64,34 @@ def test_parse_tsl_and_detect_air_purifier() -> None:
     assert device.find_property("PM25").unit == "µg/m³"
 
 
+def test_parse_device_online_is_tristate() -> None:
+    """Known online and offline values parse without guessing unknown values."""
+    assert parse_device_online(1) is True
+    assert parse_device_online("ONLINE") is True
+    for value in (
+        0,
+        3,
+        8,
+        "3",
+        "offline",
+        "inactive",
+        "disabled",
+    ):
+        assert parse_device_online(value) is False
+    assert parse_device_online(None) is None
+    assert parse_device_online(2) is None
+
+
+def test_parse_app_power_status_keeps_offline_separate_from_power() -> None:
+    """The App homepage exposes offline, online-off and online-on states."""
+    assert parse_app_power_status(0) is False
+    assert parse_app_power_status("0") is False
+    for value in (1, 2, "1", "2"):
+        assert parse_app_power_status(value) is True
+    for value in (None, True, False, 3, "online", "offline", ""):
+        assert parse_app_power_status(value) is None
+
+
 def test_enum_and_numeric_specs() -> None:
     """TSL enum labels and numeric ranges round-trip."""
     properties = parse_tsl(TSL)

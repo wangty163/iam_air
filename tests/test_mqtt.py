@@ -2,6 +2,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from custom_components.iam_air.const import FOG_MQTT_RETRY_MAX_SECONDS
 from custom_components.iam_air.mqtt import (
     IamAirFogMqttPushClient,
@@ -82,28 +84,78 @@ def test_stale_rejected_client_cannot_replace_current_client() -> None:
     assert push_client._credential_failures == 0
 
 
-def test_fog_status_push_parses_explicit_connectivity_events() -> None:
-    online = parse_fog_status_push(
-        b'{"deviceId":"fake-device","data":{"status":"online"}}'
-    )
-    offline = parse_fog_status_push(
-        b'{"deviceId":"fake-device","data":{"status":"offline"}}'
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        ("online", True),
+        ("offline", False),
+    ),
+)
+def test_parse_fog_status_push_accepts_only_explicit_states(
+    value: str,
+    expected: bool,
+) -> None:
+    payload = (
+        '{"deviceId":"test-device","data":{"status":"'
+        + value
+        + '","ip":"192.0.2.1"}}'
+    ).encode()
+
+    status = parse_fog_status_push(payload)
+
+    assert status is not None
+    assert status.iot_id == "test-device"
+    assert status.online is expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b'{"deviceId":"test-device","data":{"status":"unknown"}}',
+        b'{"deviceId":"test-device","data":{"status":"ONLINE"}}',
+        b'{"deviceId":"","data":{"status":"online"}}',
+        b'{"deviceId":"test-device","data":{}}',
+        b"not-json",
+    ),
+)
+def test_parse_fog_status_push_rejects_unknown_shapes(payload: bytes) -> None:
+    assert parse_fog_status_push(payload) is None
+
+
+def test_fog_topic_suffix_routes_status_and_properties_separately() -> None:
+    loop = SimpleNamespace(call_soon_threadsafe=lambda callback, *args: callback(*args))
+    hass = SimpleNamespace(loop=loop)
+    on_properties = Mock()
+    on_status = Mock()
+    push_client = IamAirFogMqttPushClient(
+        hass,
+        cloud=Mock(),
+        on_properties=on_properties,
+        on_status=on_status,
+        on_connection=Mock(),
     )
 
-    assert online is not None
-    assert online.iot_id == "fake-device"
-    assert online.online is True
-    assert offline is not None
-    assert offline.iot_id == "fake-device"
-    assert offline.online is False
-
-
-def test_fog_status_push_rejects_ambiguous_or_malformed_payloads() -> None:
-    assert parse_fog_status_push(b"not-json") is None
-    assert parse_fog_status_push(b'{"data":{"status":"online"}}') is None
-    assert (
-        parse_fog_status_push(
-            b'{"deviceId":"fake-device","data":{"status":"unknown"}}'
-        )
-        is None
+    push_client._on_message(
+        Mock(),
+        None,
+        SimpleNamespace(
+            topic="/account/device/status",
+            payload=b'{"deviceId":"test-device","data":{"status":"offline"}}',
+        ),
     )
+
+    on_status.assert_called_once()
+    on_properties.assert_not_called()
+
+    push_client._on_message(
+        Mock(),
+        None,
+        SimpleNamespace(
+            topic="/account/device/devdata",
+            payload=b'{"deviceId":"test-device","data":{"PowerSwitch":0}}',
+        ),
+    )
+
+    on_properties.assert_called_once()
+    assert on_properties.call_args.args[0].items["PowerSwitch"].value == 0
+    on_status.assert_called_once()
