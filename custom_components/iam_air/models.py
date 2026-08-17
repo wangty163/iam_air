@@ -142,7 +142,7 @@ class IamAirDevice:
     model: str
     product_key: str
     device_name: str
-    online: bool
+    online: bool | None
     product_category: str = ""
     product_type: str = ""
     filter_max_runtimes: tuple[int | None, int | None] = (None, None)
@@ -183,6 +183,53 @@ class DeviceSnapshot:
 
     properties: dict[str, Any]
     available: bool = True
+    online: bool | None = None
+
+
+def parse_device_online(value: Any) -> bool | None:
+    """Parse Link Living's documented binding-list device status."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        if value == 1:
+            return True
+        if value in {0, 3, 8}:
+            return False
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "online", "true"}:
+            return True
+        if normalized in {
+            "0",
+            "3",
+            "8",
+            "offline",
+            "false",
+            "inactive",
+            "disabled",
+        }:
+            return False
+    return None
+
+
+def parse_app_power_status(value: Any) -> bool | None:
+    """Parse the IAM App homepage's FOG connectivity/power tri-state."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        if value == 0:
+            return False
+        if value in {1, 2}:
+            return True
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized == "0":
+            return False
+        if normalized in {"1", "2"}:
+            return True
+    return None
 
 
 def value_as_bool(value: Any) -> bool:
@@ -308,7 +355,7 @@ def parse_device(
         ),
         product_key=str(raw.get("productKey") or ""),
         device_name=str(raw.get("deviceName") or ""),
-        online=raw.get("status") in (1, "1", True, "online", "ONLINE"),
+        online=parse_device_online(raw.get("status")),
         product_category=str(product_category or ""),
         product_type=str(product_type or ""),
         filter_max_runtimes=filter_max_runtimes,

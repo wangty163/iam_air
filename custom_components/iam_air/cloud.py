@@ -10,7 +10,8 @@ import json
 import time
 import urllib.parse
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from email.utils import formatdate
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -60,7 +61,9 @@ from .models import (
     IamAirDevice,
     IotSession,
     MobileMqttCredentials,
+    parse_app_power_status,
     parse_device,
+    parse_device_online,
     select_app_device_metadata,
     select_app_filter_names,
     select_filter_max_runtimes,
@@ -147,6 +150,38 @@ class IamCloudClient:
         data = result.get("data") or {}
         devices = data.get("data") if isinstance(data, dict) else data
         return [item for item in devices or [] if isinstance(item, dict)]
+
+    async def async_get_device_online_states(
+        self,
+        devices: Mapping[str, int | None],
+    ) -> dict[str, bool]:
+        """Return explicit online states through each device's App route."""
+        states: dict[str, bool] = {}
+        fog_iot_ids = {
+            iot_id
+            for iot_id, iot_paas_type in devices.items()
+            if iot_paas_type == IOT_PAAS_TYPE_FOG
+        }
+        link_iot_ids = set(devices) - fog_iot_ids
+
+        if fog_iot_ids:
+            for device in await self.async_list_app_devices():
+                iot_id = str(device.get("iotId") or "")
+                if iot_id not in fog_iot_ids:
+                    continue
+                online = parse_app_power_status(device.get("powerStatus"))
+                if online is not None:
+                    states[iot_id] = online
+
+        if link_iot_ids:
+            for device in await self.async_list_devices():
+                iot_id = str(device.get("iotId") or "")
+                if iot_id not in link_iot_ids:
+                    continue
+                online = parse_device_online(device.get("status"))
+                if online is not None:
+                    states[iot_id] = online
+        return states
 
     async def async_list_app_devices(self) -> list[dict[str, Any]]:
         """Return the devices selected by the IAM app's homepage service."""
@@ -286,6 +321,9 @@ class IamCloudClient:
                 detail,
                 product_configs,
             )
+            iot_paas_type = parse_iot_paas_type(
+                app_device.get("iotPaasType")
+            )
             device = parse_device(
                 raw_device,
                 tsl,
@@ -298,10 +336,15 @@ class IamCloudClient:
                     detail,
                     filter_max_runtimes,
                 ),
-                iot_paas_type=parse_iot_paas_type(
-                    app_device.get("iotPaasType")
-                ),
+                iot_paas_type=iot_paas_type,
             )
+            if iot_paas_type == IOT_PAAS_TYPE_FOG:
+                device = replace(
+                    device,
+                    online=parse_app_power_status(
+                        app_device.get("powerStatus")
+                    ),
+                )
             if device.looks_like_air_purifier:
                 discovered.append(device)
         return discovered

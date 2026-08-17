@@ -29,5 +29,12 @@
       "already_configured": "This IAM account is already configured",
       "reauth_successful": "IAM Air was reauthenticated"
     }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connectivity": {
+        "name": "Connectivity"
+      }
+    }
   }
 }

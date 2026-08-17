@@ -82,6 +82,14 @@ class MqttPropertyPush:
     items: dict[str, MqttPropertyValue]
 
 
+@dataclass(frozen=True, slots=True)
+class MqttDeviceStatus:
+    """An explicit device connectivity event from the FOG status topic."""
+
+    iot_id: str
+    online: bool
+
+
 def mqtt_broker_host(product_key: str) -> str:
     """Return the Alibaba MQTT endpoint for a validated product key."""
     if not _PRODUCT_KEY_PATTERN.fullmatch(product_key):
@@ -209,6 +217,26 @@ def parse_fog_property_push(payload: bytes) -> MqttPropertyPush | None:
     if not items:
         return None
     return MqttPropertyPush(iot_id=iot_id, items=items)
+
+
+def parse_fog_status_push(payload: bytes) -> MqttDeviceStatus | None:
+    """Parse the explicit online/offline event used by the IAM App."""
+    try:
+        message = json.loads(payload)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(message, dict):
+        return None
+    iot_id = str(message.get("deviceId") or "")
+    data = message.get("data")
+    if not iot_id or not isinstance(data, dict):
+        return None
+    status = data.get("status")
+    if status == "online":
+        return MqttDeviceStatus(iot_id=iot_id, online=True)
+    if status == "offline":
+        return MqttDeviceStatus(iot_id=iot_id, online=False)
+    return None
 
 
 class IamAirMqttPushClient:
@@ -489,11 +517,13 @@ class IamAirFogMqttPushClient:
         *,
         cloud: IamCloudClient,
         on_properties: Callable[[MqttPropertyPush], None],
+        on_status: Callable[[MqttDeviceStatus], None],
         on_connection: Callable[[bool], None],
     ) -> None:
         self._hass = hass
         self._cloud = cloud
         self._on_properties = on_properties
+        self._on_status = on_status
         self._on_connection = on_connection
         self._mqtt: mqtt.Client | None = None
         self._supervisor_task: asyncio.Task[None] | None = None
@@ -705,7 +735,18 @@ class IamAirFogMqttPushClient:
         message: mqtt.MQTTMessage,
     ) -> None:
         try:
-            if push := parse_fog_property_push(message.payload):
+            topic_suffix = message.topic.rsplit("/", 1)[-1]
+            if topic_suffix == "status":
+                if status := parse_fog_status_push(message.payload):
+                    _call_soon_threadsafe(
+                        self._hass,
+                        self._on_status,
+                        status,
+                    )
+                return
+            if topic_suffix == "devdata" and (
+                push := parse_fog_property_push(message.payload)
+            ):
                 _call_soon_threadsafe(
                     self._hass,
                     self._on_properties,
@@ -714,7 +755,7 @@ class IamAirFogMqttPushClient:
         except Exception as err:
             self._schedule_log(
                 logging.ERROR,
-                "Unable to process IAM Air FOG property push: %s",
+                "Unable to process IAM Air FOG push: %s",
                 type(err).__name__,
             )
 

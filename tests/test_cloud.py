@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,6 +12,7 @@ from custom_components.iam_air.cloud import (
     ACCEPT_JSON,
     CONTENT_TYPE_JSON,
     IamAirAuthError,
+    IamCloudClient,
     build_gateway_request,
     parse_iam_login_response,
     parse_iot_session_response,
@@ -137,3 +139,22 @@ def test_validate_oa_host_rejects_untrusted_values(host: str) -> None:
     """Server-provided endpoints cannot redirect requests to arbitrary hosts."""
     with pytest.raises(IamAirAuthError):
         validate_oa_host(host)
+
+
+async def test_device_online_states_use_each_device_transport() -> None:
+    """FOG and Link Living devices use their authoritative App routes."""
+    client = object.__new__(IamCloudClient)
+    client.async_list_app_devices = AsyncMock(
+        return_value=[{"iotId": "fog", "powerStatus": 1}]
+    )
+    client.async_list_devices = AsyncMock(
+        return_value=[{"iotId": "link", "status": 8}]
+    )
+
+    states = await client.async_get_device_online_states(
+        {"fog": 1, "link": 0}
+    )
+
+    assert states == {"fog": True, "link": False}
+    client.async_list_app_devices.assert_awaited_once_with()
+    client.async_list_devices.assert_awaited_once_with()
