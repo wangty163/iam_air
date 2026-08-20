@@ -16,8 +16,14 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .cloud import IamAirAuthError, IamAirError, IamCloudClient
+from .cloud import (
+    IamAirAuthError,
+    IamAirConnectionError,
+    IamAirError,
+    IamCloudClient,
+)
 from .const import (
+    CLOUD_CONNECTION_GRACE_SECONDS,
     CONTROL_STATE_GRACE_SECONDS,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DEVICE_STATUS_SCAN_INTERVAL_SECONDS,
@@ -100,7 +106,50 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         self._next_device_status_refresh = 0.0
         self._pending_properties: dict[str, dict[str, _PendingProperty]] = {}
         self._pushed_properties: dict[str, dict[str, _PushedProperty]] = {}
+        self._property_connection_failures: dict[str, float] = {}
         self._push_connected = False
+
+    def _snapshot_during_connection_grace(
+        self,
+        iot_id: str,
+        *,
+        online: bool | None,
+        error: IamAirConnectionError,
+    ) -> DeviceSnapshot | None:
+        """Retain the last good snapshot during a short cloud interruption."""
+        previous = (self.data or {}).get(iot_id)
+        if previous is None:
+            return None
+
+        now = time.monotonic()
+        started_at = self._property_connection_failures.get(iot_id)
+        if started_at is None:
+            started_at = now
+            self._property_connection_failures[iot_id] = started_at
+            _LOGGER.warning(
+                "IAM Air cloud property refresh failed; retaining the last "
+                "successful snapshot for up to %d seconds: %s",
+                CLOUD_CONNECTION_GRACE_SECONDS,
+                error,
+            )
+        if now - started_at >= CLOUD_CONNECTION_GRACE_SECONDS:
+            return None
+
+        return DeviceSnapshot(
+            properties=previous.properties,
+            available=previous.available if online is None else online,
+            online=online,
+        )
+
+    def _clear_property_connection_failure(self, iot_id: str) -> None:
+        """Log recovery once after a tolerated cloud interruption."""
+        started_at = self._property_connection_failures.pop(iot_id, None)
+        if started_at is None:
+            return
+        _LOGGER.info(
+            "IAM Air cloud property refresh recovered after %.1f seconds",
+            max(0.0, time.monotonic() - started_at),
+        )
 
     async def _async_update_data(self) -> dict[str, DeviceSnapshot]:
         now = time.monotonic()
@@ -145,6 +194,20 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
         for iot_id, result in zip(self.devices, results, strict=True):
             device_online = self._device_online.get(iot_id)
             if isinstance(result, Exception):
+                if (
+                    isinstance(result, IamAirConnectionError)
+                    and device_online is not False
+                ):
+                    retained = self._snapshot_during_connection_grace(
+                        iot_id,
+                        online=device_online,
+                        error=result,
+                    )
+                    if retained is not None:
+                        snapshots[iot_id] = retained
+                        continue
+                else:
+                    self._property_connection_failures.pop(iot_id, None)
                 if isinstance(result, IamAirAuthError) or device_online is not False:
                     failures.append(result)
                 previous = (self.data or {}).get(iot_id)
@@ -154,6 +217,7 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                     online=device_online,
                 )
             else:
+                self._clear_property_connection_failure(iot_id)
                 pending = self._pending_properties.get(iot_id, {})
                 properties = _reconcile_pending_properties(
                     result,
@@ -197,6 +261,8 @@ class IamAirCoordinator(DataUpdateCoordinator[dict[str, DeviceSnapshot]]):
                 continue
             previous = self._device_online.get(iot_id)
             self._device_online[iot_id] = online
+            if not online:
+                self._property_connection_failures.pop(iot_id, None)
             if previous is not None and previous != online:
                 _LOGGER.info(
                     "IAM Air device %s is now %s",
